@@ -1,0 +1,21 @@
+{
+  "name": "@woho/ai-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WoHo AI Desktop — Windows AI agent application.",
+  "packageManager": "pnpm@10.17.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm exec tauri dev",
+    "build": "pnpm exec tauri build",
+    "check": "pnpm exec tsc --noEmit",
+    "test": "pnpm exec vitest run"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
