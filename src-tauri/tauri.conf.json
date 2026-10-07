@@ -30,7 +30,8 @@
     ],
     "resources": [
       "resources/agent/",
-      "resources/llama/"
+      "resources/llama/",
+      "../woho_training.py"
     ]
   }
 }

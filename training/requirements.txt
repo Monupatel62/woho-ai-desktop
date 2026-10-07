@@ -1,0 +1,5 @@
+# Optional production training dependencies. The desktop runtime does not install these automatically.
+torch>=2.4,<3
+transformers>=4.45,<5
+peft>=0.13,<1
+bitsandbytes>=0.44,<1

@@ -127,6 +127,7 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
 
     let args = [
         "-m", "woho_training",
+        "--job-id", request.job_id.as_str(),
         "--base-model", request.base_model.as_str(),
         "--dataset-manifest", dataset.to_string_lossy().as_ref(),
         "--output-dir", output.to_string_lossy().as_ref(),
@@ -151,8 +152,12 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new() });
     }
 
+    let resource_dir = app.path().resource_dir().map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
+    let python_path = resource_dir.to_string_lossy().into_owned();
+
     let mut child = Command::new(&executable)
         .args(args)
+        .env("PYTHONPATH", &python_path)
         .current_dir(&root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
