@@ -196,7 +196,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         return Err("Bundled training runtime is missing".into());
     }
     let training_script_arg = training_script.to_string_lossy().into_owned();
-    let mut child = Command::new(&executable)
+    let mut child = match Command::new(&executable)
         .arg(training_script_arg.as_str())
         .args(args)
         .current_dir(&root)
@@ -204,7 +204,18 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("Failed to start QLoRA runtime: {error}"))?;
+    {
+        Ok(child) => child,
+        Err(error) => {
+            if let Ok(mut jobs) = state.0.lock() {
+                if let Some(job) = jobs.get_mut(&request.job_id) {
+                    job.status = "failed".into();
+                    job.stderr = format!("Failed to start QLoRA runtime: {error}");
+                }
+            }
+            return Err(format!("Failed to start QLoRA runtime: {error}"));
+        }
+    };
 
     let overflow = Arc::new(AtomicBool::new(false));
     let stdout_reader = match child.stdout.take() { Some(reader) => reader, None => { let _ = child.kill(); let _ = child.wait(); if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training stdout pipe unavailable".into(); } } return Err("Training stdout pipe unavailable".into()); } };
