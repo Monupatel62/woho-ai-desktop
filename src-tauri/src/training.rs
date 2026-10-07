@@ -33,12 +33,16 @@ pub struct TrainingRunRequest {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct TrainingProgress { pub phase: String, pub completed: u64, pub total: u64, pub percent: u8 }
+
+#[derive(Debug, Serialize, Clone)]
 pub struct TrainingJobStatus {
     pub job_id: String,
     pub status: String,
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+    pub progress: Option<TrainingProgress>,
 }
 
 #[derive(Clone, Default)]
@@ -80,6 +84,8 @@ fn append_bounded(target: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
     target.extend_from_slice(chunk);
     Ok(())
 }
+
+fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> { let value: serde_json::Value = serde_json::from_str(line).ok()?; if value.get("status")?.as_str()? != "progress" || value.get("jobId")?.as_str()? != job_id { return None; } let phase = value.get("phase")?.as_str()?.to_string(); let completed = value.get("completed")?.as_u64()?; let total = value.get("total")?.as_u64()?; let percent = value.get("percent")?.as_u64()?; if total == 0 || completed > total || percent > 100 { return None; } Some(TrainingProgress { phase, completed, total, percent: percent as u8 }) }
 
 fn python_executable() -> String {
     std::env::var("WOHO_TRAINING_PYTHON").unwrap_or_else(|_| {
@@ -149,7 +155,7 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         if let Some(existing) = jobs.get(&request.job_id) {
             if existing.status == "running" { return Err("Training job is already running".into()); }
         }
-        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new() });
+        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new(), progress: None });
     }
 
     let resource_dir = app.path().resource_dir().map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
@@ -208,6 +214,7 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         if let Some(status) = child.try_wait().map_err(|error| format!("Training process failed: {error}"))? {
             let stdout = stdout_handle.join().map_err(|_| "Training stdout reader failed".to_string())??;
             let stderr = stderr_handle.join().map_err(|_| "Training stderr reader failed".to_string())??;
+            let progress = String::from_utf8_lossy(&stdout).lines().rev().find_map(|line| parse_progress_line(line, &request.job_id));
             let result = TrainingRunResult {
                 job_id: request.job_id,
                 status: if status.success() { "completed" } else { "failed" },
@@ -216,7 +223,7 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
             };
             if let Ok(mut jobs) = state.0.lock() {
-                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone() });
+                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), progress });
             }
             return Ok(result);
         }
