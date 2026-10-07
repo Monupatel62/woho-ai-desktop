@@ -174,6 +174,13 @@ fn sha256_file(path: &Path, max_bytes: u64) -> Result<(String, u64), String> {
 fn verify_training_artifact(root: &Path, output: &Path, job_id: &str, dataset: &Path) -> Result<TrainingArtifact, String> {
     let plan = output.join("training-plan.json");
     if !plan.is_file() { return Err("Training artifact training-plan.json is missing".into()); }
+    if fs::symlink_metadata(&plan)
+        .map_err(|error| format!("Unable to inspect training artifact: {error}"))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("Training artifact must not be a symlink".into());
+    }
     let bytes = fs::read(&plan).map_err(|error| format!("Unable to read training plan: {error}"))?;
     if bytes.len() as u64 > MAX_ARTIFACT_BYTES { return Err("Training artifact exceeds the size limit".into()); }
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| format!("Training plan is not valid JSON: {error}"))?;
@@ -216,6 +223,43 @@ fn relative_path(root: &Path, value: &str, label: &str) -> Result<PathBuf, Strin
         return Err(format!("{label} escapes the training directory"));
     }
     Ok(normalized)
+}
+
+fn reject_symlink_path(root: &Path, candidate: &Path, label: &str) -> Result<(), String> {
+    let relative = candidate
+        .strip_prefix(root)
+        .map_err(|_| format!("{label} escapes the training directory"))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        if let std::path::Component::Normal(name) = component {
+            current.push(name);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(format!("{label} contains a symlinked path component"));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(format!("Unable to inspect {label}: {error}"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonicalize_inside(root: &Path, candidate: &Path, label: &str) -> Result<PathBuf, String> {
+    reject_symlink_path(root, candidate, label)?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("Unable to canonicalize training directory: {error}"))?;
+    let canonical_candidate = candidate
+        .canonicalize()
+        .map_err(|error| format!("Unable to canonicalize {label}: {error}"))?;
+    if !canonical_candidate.starts_with(&canonical_root) {
+        return Err(format!("{label} escapes the training directory"));
+    }
+    Ok(canonical_candidate)
 }
 
 fn append_bounded(target: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
@@ -295,13 +339,16 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     fs::create_dir_all(&root)
         .map_err(|error| format!("Unable to create training directory: {error}"))?;
 
-    let dataset = relative_path(&root, &request.dataset_manifest, "dataset manifest")?;
-    let output = relative_path(&root, &request.output_dir, "output directory")?;
-    if !dataset.is_file() {
+    let dataset_candidate = relative_path(&root, &request.dataset_manifest, "dataset manifest")?;
+    let output_candidate = relative_path(&root, &request.output_dir, "output directory")?;
+    if !dataset_candidate.is_file() {
         return Err("Training dataset manifest does not exist".into());
     }
-    fs::create_dir_all(&output)
+    let dataset = canonicalize_inside(&root, &dataset_candidate, "dataset manifest")?;
+    reject_symlink_path(&root, &output_candidate, "output directory")?;
+    fs::create_dir_all(&output_candidate)
         .map_err(|error| format!("Unable to create training output directory: {error}"))?;
+    let output = canonicalize_inside(&root, &output_candidate, "output directory")?;
 
     let executable = python_executable();
     if executable.contains('/') || executable.contains('\\') || executable.contains("..") {
@@ -816,6 +863,23 @@ mod tests {
         file.write_all(&vec![b'x'; (MAX_ARTIFACT_BYTES as usize) + 1]).unwrap();
         drop(file);
         assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_symlinked_training_paths() {
+        let temp = std::env::temp_dir().join(format!("woho-training-symlink-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = root.join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside, &link).unwrap();
+        assert!(reject_symlink_path(&root, &link, "output").is_err());
         let _ = fs::remove_dir_all(temp);
     }
 
