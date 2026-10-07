@@ -9,3 +9,7 @@ src-tauri/gen/
 coverage/
 .DS_Store
 Thumbs.db
+
+.build/
+src-tauri/resources/agent/
+src-tauri/resources/llama/
