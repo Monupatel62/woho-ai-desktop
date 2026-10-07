@@ -10,6 +10,7 @@ from typing import Any
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_DATASET_RECORDS = 1_000_000
 ALLOWED_QUANTIZATION = {"4bit", "8bit"}
+PROGRESS_VERSION = 1
 
 
 def _bounded_path(value: str, root: Path, label: str) -> Path:
@@ -88,6 +89,8 @@ def write_training_plan(args: argparse.Namespace, dataset: Path, output: Path, r
         "learningRate": args.learning_rate,
         "quantization": args.quantization,
         "status": "validated",
+        "progressVersion": PROGRESS_VERSION,
+        "progress": {"phase": "validation", "completed": 0, "total": 1, "percent": 0},
     }
     target = output / "training-plan.json"
     target.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -112,7 +115,7 @@ def main() -> int:
         dataset, output = validate_request(args, root)
         records = load_manifest(dataset)
         plan = write_training_plan(args, dataset, output, records)
-        print(json.dumps({"status": "validated", "jobId": args.job_id, "records": len(records), "plan": str(plan)}), flush=True)
+        print(json.dumps({"status": "progress", "jobId": args.job_id, "phase": "validation", "completed": 1, "total": 1, "percent": 100}), flush=True)\n        print(json.dumps({"status": "validated", "jobId": args.job_id, "records": len(records), "plan": str(plan)}), flush=True)
         backend = os.environ.get("WOHO_TRAINING_BACKEND")
         if not backend:
             print(json.dumps({"status": "ready", "message": "Training backend not installed; validated plan only."}), flush=True)
