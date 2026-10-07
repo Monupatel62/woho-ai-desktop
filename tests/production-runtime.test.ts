@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 describe("production runtime contracts", () => {
   it("runs llama.cpp as a bounded single-turn chat process", () => {
     const bridge = readFileSync(new URL("../src/agent/agent-bridge.mjs", import.meta.url), "utf8");
-    expect(bridge).toContain('" -cnv"'.trim());
-    expect(bridge).toContain('" -st"'.trim());
+    expect(bridge).toContain('"-cnv"');
+    expect(bridge).toContain('"-st"');
     expect(bridge).toContain('"--jinja"');
     expect(bridge).toContain('"--no-display-prompt"');
     expect(bridge).toContain("llama.cpp execution timed out");
