@@ -114,10 +114,10 @@ impl TrainingState {
         values.truncate(MAX_PERSISTED_JOBS);
         for job in &mut values {
             if job.stdout.len() > MAX_PERSISTED_OUTPUT_BYTES {
-                job.stdout.truncate(MAX_PERSISTED_OUTPUT_BYTES);
+                truncate_utf8(&mut job.stdout, MAX_PERSISTED_OUTPUT_BYTES);
             }
             if job.stderr.len() > MAX_PERSISTED_OUTPUT_BYTES {
-                job.stderr.truncate(MAX_PERSISTED_OUTPUT_BYTES);
+                truncate_utf8(&mut job.stderr, MAX_PERSISTED_OUTPUT_BYTES);
             }
         }
         Ok(values)
@@ -137,6 +137,16 @@ impl TrainingState {
         fs::rename(&temp, path)
             .map_err(|error| format!("Unable to atomically replace training state: {error}"))?;
         Ok(())
+    }
+}
+
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() > max_bytes {
+        let mut end = max_bytes;
+        while end > 0 && !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
     }
 }
 
@@ -699,6 +709,15 @@ mod tests {
         assert_eq!(values.len(), MAX_PERSISTED_JOBS);
         assert!(values.iter().all(|job| job.stdout.len() <= MAX_PERSISTED_OUTPUT_BYTES));
         assert!(values.iter().all(|job| job.stderr.len() <= MAX_PERSISTED_OUTPUT_BYTES));
+    }
+
+    #[test]
+    fn truncates_utf8_without_panicking_or_splitting_characters() {
+        let mut value = "😀".repeat((MAX_PERSISTED_OUTPUT_BYTES / 4) + 8);
+        truncate_utf8(&mut value, MAX_PERSISTED_OUTPUT_BYTES - 1);
+        assert!(value.len() <= MAX_PERSISTED_OUTPUT_BYTES - 1);
+        assert!(value.is_char_boundary(value.len()));
+        assert!(value.chars().all(|character| character == '😀'));
     }
 
     #[test]
