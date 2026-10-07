@@ -12,6 +12,9 @@ use tauri::Manager;
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ARGS: usize = 64;
 const MAX_RUNTIME_SECS: u64 = 60 * 60;
+const TRAINING_STATE_VERSION: u32 = 1;
+const MAX_PERSISTED_JOBS: usize = 64;
+const MAX_PERSISTED_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct TrainingRunRequest {
@@ -32,10 +35,10 @@ pub struct TrainingRunRequest {
     pub quantization: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TrainingProgress { pub phase: String, pub completed: u64, pub total: u64, pub percent: u8 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TrainingJobStatus {
     pub job_id: String,
     pub status: String,
@@ -45,8 +48,88 @@ pub struct TrainingJobStatus {
     pub progress: Option<TrainingProgress>,
 }
 
-#[derive(Clone, Default)]
-pub struct TrainingState(pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>);
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedTrainingState {
+    version: u32,
+    jobs: Vec<TrainingJobStatus>,
+}
+
+#[derive(Clone)]
+pub struct TrainingState(
+    pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>,
+    Arc<PathBuf>,
+    Arc<Mutex<()>>,
+);
+
+impl TrainingState {
+    pub fn load(app: &tauri::AppHandle) -> Result<Self, String> {
+        let root = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("Unable to resolve app data directory: {error}"))?
+            .join("training");
+        fs::create_dir_all(&root)
+            .map_err(|error| format!("Unable to create training directory: {error}"))?;
+        let path = root.join("jobs.json");
+        let mut jobs = std::collections::HashMap::new();
+        let mut recovered = false;
+        if path.is_file() {
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("Unable to read persisted training state: {error}"))?;
+            let persisted: PersistedTrainingState = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("Invalid persisted training state: {error}"))?;
+            if persisted.version != TRAINING_STATE_VERSION {
+                return Err("Unsupported persisted training state version".into());
+            }
+            for mut job in persisted.jobs.into_iter().take(MAX_PERSISTED_JOBS) {
+                if job.status == "running" {
+                    job.status = "failed".into();
+                    job.stderr = "Training job interrupted by application restart".into();
+                    recovered = true;
+                }
+                jobs.insert(job.job_id.clone(), job);
+            }
+        }
+        let state = Self(Arc::new(Mutex::new(jobs)), Arc::new(path), Arc::new(Mutex::new(())));
+        if recovered {
+            state.persist()?;
+        }
+        Ok(state)
+    }
+
+    fn persisted_jobs(&self) -> Result<Vec<TrainingJobStatus>, String> {
+        let jobs = self.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+        let mut values = jobs.values().cloned().collect::<Vec<_>>();
+        values.sort_by(|a, b| a.job_id.cmp(&b.job_id));
+        values.truncate(MAX_PERSISTED_JOBS);
+        for job in &mut values {
+            if job.stdout.len() > MAX_PERSISTED_OUTPUT_BYTES {
+                job.stdout.truncate(MAX_PERSISTED_OUTPUT_BYTES);
+            }
+            if job.stderr.len() > MAX_PERSISTED_OUTPUT_BYTES {
+                job.stderr.truncate(MAX_PERSISTED_OUTPUT_BYTES);
+            }
+        }
+        Ok(values)
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let _guard = self.2.lock().map_err(|_| "Training persistence lock failed".to_string())?;
+        let snapshot = PersistedTrainingState {
+            version: TRAINING_STATE_VERSION,
+            jobs: self.persisted_jobs()?,
+        };
+        let bytes = serde_json::to_vec_pretty(&snapshot)
+            .map_err(|error| format!("Unable to encode training state: {error}"))?;
+        let path = self.1.as_ref();
+        let temp = path.with_extension("json.tmp");
+        fs::write(&temp, bytes)
+            .map_err(|error| format!("Unable to write training state: {error}"))?;
+        fs::rename(&temp, path)
+            .map_err(|error| format!("Unable to atomically replace training state: {error}"))?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct TrainingRunResult {
@@ -101,14 +184,15 @@ fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> {
     Some(TrainingProgress { phase, completed, total, percent: percent as u8 })
 }
 
-fn set_progress(state: &Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>, job_id: &str, progress: TrainingProgress) {
-    if let Ok(mut jobs) = state.lock() {
+fn set_progress(state: &TrainingState, job_id: &str, progress: TrainingProgress) {
+    if let Ok(mut jobs) = state.0.lock() {
         if let Some(job) = jobs.get_mut(job_id) {
             if job.status == "running" {
                 job.progress = Some(progress);
             }
         }
     }
+    let _ = state.persist();
 }
 
 fn python_executable() -> String {
@@ -188,11 +272,13 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         }
         jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new(), progress: None });
     }
+    state.persist()?;
 
     let resource_dir = app.path().resource_dir().map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
     let training_script = resource_dir.join("woho_training.py");
     if !training_script.is_file() {
         if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Bundled training runtime is missing".into(); } }
+        let _ = state.persist();
         return Err("Bundled training runtime is missing".into());
     }
     let training_script_arg = training_script.to_string_lossy().into_owned();
@@ -213,18 +299,19 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                     job.stderr = format!("Failed to start QLoRA runtime: {error}");
                 }
             }
+            let _ = state.persist();
             return Err(format!("Failed to start QLoRA runtime: {error}"));
         }
     };
 
     let overflow = Arc::new(AtomicBool::new(false));
-    let stdout_reader = match child.stdout.take() { Some(reader) => reader, None => { let _ = child.kill(); let _ = child.wait(); if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training stdout pipe unavailable".into(); } } return Err("Training stdout pipe unavailable".into()); } };
-    let stderr_reader = match child.stderr.take() { Some(reader) => reader, None => { let _ = child.kill(); let _ = child.wait(); if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training stderr pipe unavailable".into(); } } return Err("Training stderr pipe unavailable".into()); } };
+    let stdout_reader = match child.stdout.take() { Some(reader) => reader, None => { let _ = child.kill(); let _ = child.wait(); if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training stdout pipe unavailable".into(); } } let _ = state.persist(); return Err("Training stdout pipe unavailable".into()); } };
+    let stderr_reader = match child.stderr.take() { Some(reader) => reader, None => { let _ = child.kill(); let _ = child.wait(); if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training stderr pipe unavailable".into(); } } let _ = state.persist(); return Err("Training stderr pipe unavailable".into()); } };
 
     fn drain_output<R: Read + Send + 'static>(
         mut reader: R,
         overflow: Arc<AtomicBool>,
-        progress_state: Option<Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>>,
+        progress_state: Option<TrainingState>,
         job_id: Option<String>,
     ) -> thread::JoinHandle<Result<Vec<u8>, String>> {
         thread::spawn(move || {
@@ -260,7 +347,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         })
     }
 
-    let progress_state = Arc::clone(&state.0);
+    let progress_state = (*state).clone();
     let stdout_handle = drain_output(stdout_reader, Arc::clone(&overflow), Some(progress_state), Some(request.job_id.clone()));
     let stderr_handle = drain_output(stderr_reader, Arc::clone(&overflow), None, None);
     let started = Instant::now();
@@ -269,6 +356,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             let _ = child.kill();
             let _ = child.wait();
             if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "QLoRA training exceeded the runtime limit".into(); } }
+            let _ = state.persist();
             return Err("QLoRA training exceeded the runtime limit".into());
         }
         if overflow.load(Ordering::SeqCst) {
@@ -277,6 +365,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             let _ = stdout_handle.join();
             let _ = stderr_handle.join();
             if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training output exceeds the size limit".into(); } }
+            let _ = state.persist();
             return Err("Training output exceeds the size limit".into());
         }
         if let Some(status) = child.try_wait().map_err(|error| format!("Training process failed: {error}"))? {
@@ -296,6 +385,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             if let Ok(mut jobs) = state.0.lock() {
                 jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), progress });
             }
+            state.persist()?;
             return Ok(result);
         }
         thread::sleep(Duration::from_millis(100));
@@ -365,5 +455,7 @@ pub fn training_job_clear(
     safe_component(&job_id, "training job id", 128)?;
     let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
     jobs.remove(&job_id);
+    drop(jobs);
+    state.persist()?;
     Ok(())
 }

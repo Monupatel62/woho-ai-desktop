@@ -558,7 +558,11 @@ async fn agent_chat(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(training::TrainingState::default())
+        .setup(|app| {
+            let state = training::TrainingState::load(app.handle()).map_err(std::io::Error::other)?;
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             health,
             runtime_status,
