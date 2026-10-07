@@ -11,5 +11,9 @@ coverage/
 Thumbs.db
 
 .build/
-src-tauri/resources/agent/
+src-tauri/resources/agent/*
+src-tauri/resources/llama/*
 src-tauri/resources/llama/
+
+!src-tauri/resources/agent/.gitkeep
+!src-tauri/resources/llama/.gitkeep
