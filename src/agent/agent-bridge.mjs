@@ -133,17 +133,26 @@ async function main(request) {
   return { text: result.text, modelId, runtime: "local" };
 }
 
-const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
-for await (const line of input) {
-  if (!line.trim()) continue;
-  try {
-    const result = await main(JSON.parse(line));
-    process.stdout.write(JSON.stringify({ ok: true, result }) + "\n");
-  } catch (error) {
-    process.stdout.write(JSON.stringify({
-      ok: false,
-      error: error instanceof Error ? error.message : "Agent bridge failed",
-    }) + "\n");
+async function runProtocol() {
+  const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  for await (const line of input) {
+    if (!line.trim()) continue;
+    try {
+      const result = await main(JSON.parse(line));
+      process.stdout.write(JSON.stringify({ ok: true, result }) + "\n");
+    } catch (error) {
+      process.stdout.write(JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : "Agent bridge failed",
+      }) + "\n");
+    }
+    break;
   }
-  break;
 }
+
+runProtocol().catch((error) => {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    error: error instanceof Error ? error.message : "Agent bridge failed",
+  }) + "\n");
+});

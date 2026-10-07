@@ -21,8 +21,13 @@
 | 17 | Verified model manager with install/remove/verify commands |
 | 18 | Security validation baseline |
 | 19 | Regression tests |
-| 20 | Windows MSI/NSIS bundle configuration |
+| 20 | Windows MSI/NSIS production pipeline with bundled Node SEA agent + verified llama.cpp CPU runtime |
 
 ## Model policy
 
 Model binaries are never committed to Git. The desktop app downloads the pinned development GGUF into managed app-data storage, verifies its exact size and SHA-256, and only then exposes it to the local agent runtime.
+
+
+## Windows production release
+
+The release workflow builds on `windows-latest`, creates the Node agent bridge as a single executable, verifies and bundles llama.cpp b11430 CPU x64, and produces MSI/NSIS artifacts. Runtime resources are generated only in CI and are excluded from Git. Users do not need Node.js or a separate llama.cpp installation.

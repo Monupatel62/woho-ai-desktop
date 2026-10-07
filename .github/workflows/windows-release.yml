@@ -7,27 +7,76 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  LLAMA_CPP_TAG: b11430
+  LLAMA_CPP_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11430/llama-b11430-bin-win-cpu-x64.zip
+  LLAMA_CPP_SHA256: b608455b0109793f774537d63d15d4cf2098ddbc5b200ebc9a648e1d85369666
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.17.0
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: pnpm
+          node-version: 22
+
       - uses: dtolnay/rust-toolchain@stable
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm build
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build Node agent sidecar
+        run: pnpm build:agent-sidecar
+
+      - name: Download and verify llama.cpp
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "llama-cpu.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "llama-extract"
+          $resource = Join-Path $env:GITHUB_WORKSPACE "src-tauri/resources/llama"
+
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          New-Item -ItemType Directory -Force -Path $resource | Out-Null
+          Invoke-WebRequest -Uri $env:LLAMA_CPP_URL -OutFile $archive
+
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLAMA_CPP_SHA256) {
+            throw "llama.cpp archive SHA-256 mismatch. Expected $env:LLAMA_CPP_SHA256 but got $actual"
+          }
+
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+          $cli = Get-ChildItem -Path $extract -Filter "llama-cli.exe" -File -Recurse |
+            Select-Object -First 1
+          if ($null -eq $cli) {
+            throw "llama-cli.exe was not found in the verified llama.cpp archive"
+          }
+
+          Copy-Item -Path (Join-Path $cli.Directory.FullName "*") -Destination $resource -Recurse -Force
+          & (Join-Path $resource "llama-cli.exe") --version
+
+      - name: Build Windows installers
+        run: pnpm exec tauri build --bundles nsis,msi
+
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
         with:
-          name: woho-ai-windows
+          name: woho-ai-windows-${{ github.ref_name }}
           path: |
-            src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload portable application bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: woho-ai-windows-app-${{ github.ref_name }}
+          path: src-tauri/target/release/woho-ai-desktop.exe
+          if-no-files-found: error

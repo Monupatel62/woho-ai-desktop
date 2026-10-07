@@ -5,28 +5,35 @@ The desktop runtime uses a strict process boundary:
 ```
 UI
   -> Tauri invoke(agent_chat)
-  -> Node agent bridge
+  -> Node agent sidecar (production) / Node worker (development)
   -> @woho/agents AgentRuntime
   -> @woho/core AIClient
-  -> llama.cpp provider
+  -> llama.cpp
   -> verified GGUF model
 ```
 
+## Production Windows runtime
+
+The Windows release pipeline builds the Node agent bridge into a single executable using Node's Single Executable Application (SEA) support. The resulting `woho-agent.exe` is bundled as an application resource, so users do not need Node.js installed.
+
+The release pipeline also downloads a pinned llama.cpp Windows x64 CPU archive, verifies its SHA-256, extracts the runtime into the build-only resource directory, and bundles it with the installer. The application resolves the packaged `llama/` resource at runtime; the user does not need to install llama.cpp separately.
+
+The current pinned runtime is llama.cpp `b11430` with archive SHA-256:
+
+`b608455b0109793f774537d63d15d4cf2098ddbc5b200ebc9a648e1d85369666`
+
+The current release is CPU-only. GPU-specific runtimes can be added later as hardware-targeted bundles.
+
 ## Development runtime
 
-The bridge worker is `src/agent/agent-bridge.mjs`. It is started by the Tauri command with Node during development.
+The repository worker remains `src/agent/agent-bridge.mjs` for development. If the packaged agent resource is unavailable, Tauri falls back to this worker and the configured Node executable.
 
-Managed runtime files are expected under the Tauri app-data directory:
+Development llama.cpp remains configurable through the managed app-data runtime directory and environment overrides.
 
-- `runtimes/llama/llama-cli.exe` on Windows
-- `models/<model-id>.gguf`
+## Model runtime
 
-The model manager ships a trusted manifest. The current development model is `qwen3-0.6b-q4_0`, backed by the `ggml-org/Qwen3-0.6B-GGUF` Q4_0 artifact. Installation is restricted to the bundled HTTPS source, bounded to 512 MiB, downloaded to a unique temporary file, SHA-256 verified, flushed, and atomically renamed into the managed model directory.
+Models are downloaded after installation into managed app-data storage. They are never committed to Git or embedded in the installer. The model manager verifies the exact byte size and SHA-256 before a model is exposed to the agent.
 
-Chat requests verify the installed model against the pinned size and SHA-256 before starting llama.cpp. Model binaries are never committed to Git.
+## Security boundary
 
-## Production
-
-The Node bridge will be packaged as a Tauri sidecar so users do not need to install Node separately. Tauri supports embedding external binaries/sidecars and resolves platform-specific target binaries during bundling. See the official Tauri sidecar documentation.
-
-The native llama.cpp runtime is also expected to be installed into the managed runtime directory by a later production-runtime step. The model manager intentionally downloads model data after installation rather than embedding hundreds of megabytes in the installer.
+Production paths are resolved from Tauri's resource directory rather than accepted from the UI. The UI can provide only a trusted model ID. The agent bridge receives managed runtime/model paths from Rust and launches llama.cpp without a shell.
