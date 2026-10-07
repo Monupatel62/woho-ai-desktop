@@ -137,11 +137,17 @@ fn validate_model(model: &TrustedModel) -> Result<(), String> {
 }
 
 fn models_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(app
+    let dir = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Unable to resolve app data directory: {error}"))?
-        .join("models"))
+        .join("models");
+    if let Ok(metadata) = fs::symlink_metadata(&dir) {
+        if metadata.file_type().is_symlink() {
+            return Err("Managed model directory must not be a symlink".into());
+        }
+    }
+    Ok(dir)
 }
 
 fn model_path(app: &tauri::AppHandle, model: &TrustedModel) -> Result<PathBuf, String> {
@@ -167,11 +173,16 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 
 fn verify_model_file(app: &tauri::AppHandle, model: &TrustedModel) -> Result<bool, String> {
     let path = model_path(app, model)?;
-    let metadata = match fs::metadata(&path) {
+    let link_metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("Unable to inspect model: {error}")),
     };
+    if link_metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let metadata = fs::metadata(&path)
+        .map_err(|error| format!("Unable to inspect model: {error}"))?;
     if metadata.len() != model.size_bytes {
         return Ok(false);
     }
