@@ -85,7 +85,30 @@ fn append_bounded(target: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> { let value: serde_json::Value = serde_json::from_str(line).ok()?; if value.get("status")?.as_str()? != "progress" || value.get("jobId")?.as_str()? != job_id { return None; } let phase = value.get("phase")?.as_str()?.to_string(); let completed = value.get("completed")?.as_u64()?; let total = value.get("total")?.as_u64()?; let percent = value.get("percent")?.as_u64()?; if total == 0 || completed > total || percent > 100 { return None; } Some(TrainingProgress { phase, completed, total, percent: percent as u8 }) }
+fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if value.get("status")?.as_str()? != "progress" || value.get("jobId")?.as_str()? != job_id {
+        return None;
+    }
+    let phase = value.get("phase")?.as_str()?.to_string();
+    let completed = value.get("completed")?.as_u64()?;
+    let total = value.get("total")?.as_u64()?;
+    let percent = value.get("percent")?.as_u64()?;
+    if total == 0 || completed > total || percent > 100 {
+        return None;
+    }
+    Some(TrainingProgress { phase, completed, total, percent: percent as u8 })
+}
+
+fn set_progress(state: &Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>, job_id: &str, progress: TrainingProgress) {
+    if let Ok(mut jobs) = state.lock() {
+        if let Some(job) = jobs.get_mut(job_id) {
+            if job.status == "running" {
+                job.progress = Some(progress);
+            }
+        }
+    }
+}
 
 fn python_executable() -> String {
     std::env::var("WOHO_TRAINING_PYTHON").unwrap_or_else(|_| {
@@ -178,9 +201,12 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
     fn drain_output<R: Read + Send + 'static>(
         mut reader: R,
         overflow: Arc<AtomicBool>,
+        progress_state: Option<Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>>,
+        job_id: Option<String>,
     ) -> thread::JoinHandle<Result<Vec<u8>, String>> {
         thread::spawn(move || {
             let mut output = Vec::new();
+            let mut pending = String::new();
             let mut buffer = [0u8; 32 * 1024];
             loop {
                 let size = reader.read(&mut buffer).map_err(|error| format!("Training output read failed: {error}"))?;
@@ -189,14 +215,31 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
                     output.extend_from_slice(&buffer[..size]);
                 } else {
                     overflow.store(true, Ordering::SeqCst);
+                    continue;
+                }
+                if let (Some(state), Some(job_id)) = (&progress_state, &job_id) {
+                    pending.push_str(&String::from_utf8_lossy(&buffer[..size]));
+                    while let Some(index) = pending.find('\n') {
+                        let line = pending[..index].trim_end_matches('\r').to_string();
+                        pending.drain(..=index);
+                        if let Some(progress) = parse_progress_line(&line, job_id) {
+                            set_progress(state, job_id, progress);
+                        }
+                    }
+                }
+            }
+            if let (Some(state), Some(job_id)) = (&progress_state, &job_id) {
+                if let Some(progress) = parse_progress_line(pending.trim(), job_id) {
+                    set_progress(state, job_id, progress);
                 }
             }
             Ok(output)
         })
     }
 
-    let stdout_handle = drain_output(stdout_reader, Arc::clone(&overflow));
-    let stderr_handle = drain_output(stderr_reader, Arc::clone(&overflow));
+    let progress_state = Arc::clone(&state.0);
+    let stdout_handle = drain_output(stdout_reader, Arc::clone(&overflow), Some(progress_state), Some(request.job_id.clone()));
+    let stderr_handle = drain_output(stderr_reader, Arc::clone(&overflow), None, None);
     let started = Instant::now();
     loop {
         if started.elapsed() > Duration::from_secs(MAX_RUNTIME_SECS) {
@@ -214,7 +257,10 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         if let Some(status) = child.try_wait().map_err(|error| format!("Training process failed: {error}"))? {
             let stdout = stdout_handle.join().map_err(|_| "Training stdout reader failed".to_string())??;
             let stderr = stderr_handle.join().map_err(|_| "Training stderr reader failed".to_string())??;
-            let progress = String::from_utf8_lossy(&stdout).lines().rev().find_map(|line| parse_progress_line(line, &request.job_id));
+            let progress = {
+                let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+                jobs.get(&request.job_id).and_then(|job| job.progress.clone())
+            };
             let result = TrainingRunResult {
                 job_id: request.job_id,
                 status: if status.success() { "completed" } else { "failed" },
@@ -244,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_relative_training_paths_inside_root() {
+    #[test]\n    fn parses_valid_progress_event() {\n        let progress = parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":4,"total":10,"percent":40}"#, "job-1").unwrap();\n        assert_eq!(progress.phase, "training");\n        assert_eq!(progress.completed, 4);\n        assert_eq!(progress.percent, 40);\n    }\n\n    #[test]\n    fn rejects_invalid_progress_event() {\n        assert!(parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":11,"total":10,"percent":110}"#, "job-1").is_none());\n        assert!(parse_progress_line(r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#, "job-1").is_none());\n    }\n\n    #[test]\n    fn keeps_relative_training_paths_inside_root() {
         let root = Path::new("training");
         assert!(relative_path(root, "dataset/manifest.jsonl", "dataset").is_ok());
         assert!(relative_path(root, "../outside.jsonl", "dataset").is_err());
