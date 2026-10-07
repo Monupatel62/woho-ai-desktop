@@ -495,7 +495,34 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                     return Err(error);
                 }
             };
-            let progress = {        thread::sleep(Duration::from_millis(100));
+            let progress = {
+                let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+                jobs.get(&request.job_id).and_then(|job| job.progress.clone())
+            };
+            let mut artifact = None;
+            let mut result_status = if status.success() { "completed" } else { "failed" };
+            let mut result_stderr = String::from_utf8_lossy(&stderr).into_owned();
+            if status.success() {
+                match verify_training_artifact(&root, &output, &request.job_id, &dataset) {
+                    Ok(value) => artifact = Some(value),
+                    Err(error) => { result_status = "failed"; result_stderr = error; }
+                }
+            }
+            let result = TrainingRunResult {
+                job_id: request.job_id,
+                status: result_status,
+                exit_code: status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: result_stderr,
+                artifact: artifact.clone(),
+            };
+            if let Ok(mut jobs) = state.0.lock() {
+                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), artifact, progress });
+            }
+            state.persist()?;
+            return Ok(result);
+        }
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
