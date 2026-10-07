@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -31,6 +32,18 @@ pub struct TrainingRunRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
+pub struct TrainingJobStatus {
+    pub job_id: String,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Clone, Default)]
+pub struct TrainingState(pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>);
+
 pub struct TrainingRunResult {
     pub job_id: String,
     pub status: &'static str,
@@ -129,6 +142,15 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         return Err("Training command has too many arguments".into());
     }
 
+    let state = app.state::<TrainingState>();
+    {
+        let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+        if let Some(existing) = jobs.get(&request.job_id) {
+            if existing.status == "running" { return Err("Training job is already running".into()); }
+        }
+        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new() });
+    }
+
     let mut child = Command::new(&executable)
         .args(args)
         .current_dir(&root)
@@ -162,13 +184,17 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
                     append_bounded(&mut stderr, &buffer[..size])?;
                 }
             }
-            return Ok(TrainingRunResult {
+            let result = TrainingRunResult {
                 job_id: request.job_id,
                 status: if status.success() { "completed" } else { "failed" },
                 exit_code: status.code().unwrap_or(-1),
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
-            });
+            };
+            if let Ok(mut jobs) = state.0.lock() {
+                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone() });
+            }
+            return Ok(result);
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -193,4 +219,26 @@ mod tests {
         assert!(relative_path(root, "../outside.jsonl", "dataset").is_err());
         assert!(relative_path(root, "/absolute/path", "dataset").is_err());
     }
+}
+
+
+#[tauri::command]
+pub fn training_job_status(
+    state: tauri::State<'_, TrainingState>,
+    job_id: String,
+) -> Result<TrainingJobStatus, String> {
+    safe_component(&job_id, "training job id", 128)?;
+    let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+    jobs.get(&job_id).cloned().ok_or_else(|| "Training job not found".into())
+}
+
+#[tauri::command]
+pub fn training_job_clear(
+    state: tauri::State<'_, TrainingState>,
+    job_id: String,
+) -> Result<(), String> {
+    safe_component(&job_id, "training job id", 128)?;
+    let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+    jobs.remove(&job_id);
+    Ok(())
 }
