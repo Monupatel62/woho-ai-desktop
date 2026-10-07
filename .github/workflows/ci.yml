@@ -37,3 +37,43 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check
+
+  
+  windows-production:
+    runs-on: windows-latest
+    env:
+      LLAMA_CPP_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11430/llama-b11430-bin-win-cpu-x64.zip
+      LLAMA_CPP_SHA256: b608455b0109793f774537d63d15d4cf2098ddbc5b200ebc9a648e1d85369666
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --no-frozen-lockfile
+      - name: Build production agent sidecar
+        run: pnpm build:agent-sidecar
+      - name: Prepare verified llama.cpp resource
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "llama-cpu.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "llama-extract"
+          $resource = Join-Path $env:GITHUB_WORKSPACE "src-tauri/resources/llama"
+          New-Item -ItemType Directory -Force -Path $extract,$resource | Out-Null
+          Invoke-WebRequest -Uri $env:LLAMA_CPP_URL -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLAMA_CPP_SHA256) {
+            throw "llama.cpp SHA-256 mismatch"
+          }
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+          $cli = Get-ChildItem -Path $extract -Filter "llama-cli.exe" -File -Recurse | Select-Object -First 1
+          if ($null -eq $cli) {
+            throw "llama-cli.exe missing"
+          }
+          Copy-Item -Path (Join-Path $cli.Directory.FullName "*") -Destination $resource -Recurse -Force
+      - name: Compile production Tauri application
+        run: pnpm exec tauri build --no-bundle
