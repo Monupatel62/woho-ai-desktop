@@ -19,6 +19,7 @@ const MAX_PERSISTED_JOBS: usize = 64;
 const MAX_PERSISTED_OUTPUT_BYTES: usize = 64 * 1024;
 const TRAINING_PLAN_SCHEMA_VERSION: u64 = 1;
 const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_ACTIVE_TRAINING_JOBS: usize = 2;
 
 #[derive(Debug, Deserialize)]
 pub struct TrainingRunRequest {
@@ -262,14 +263,6 @@ fn canonicalize_inside(root: &Path, candidate: &Path, label: &str) -> Result<Pat
     Ok(canonical_candidate)
 }
 
-fn append_bounded(target: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
-    if target.len().saturating_add(chunk.len()) > MAX_OUTPUT_BYTES {
-        return Err("Training output exceeds the size limit".into());
-    }
-    target.extend_from_slice(chunk);
-    Ok(())
-}
-
 fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     if value.get("status")?.as_str()? != "progress" || value.get("jobId")?.as_str()? != job_id {
@@ -284,6 +277,10 @@ fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> {
     let total = value.get("total")?.as_u64()?;
     let percent = value.get("percent")?.as_u64()?;
     if total == 0 || completed > total || percent > 100 {
+        return None;
+    }
+    let expected_percent = completed.saturating_mul(100) / total;
+    if percent as u64 != expected_percent && percent as u64 != expected_percent.saturating_add(1) {
         return None;
     }
     Some(TrainingProgress { phase, completed, total, percent: percent as u8 })
@@ -346,6 +343,13 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     }
     let dataset = canonicalize_inside(&root, &dataset_candidate, "dataset manifest")?;
     reject_symlink_path(&root, &output_candidate, "output directory")?;
+    if output_candidate == root || output_candidate == dataset_candidate {
+        return Err("Training output directory must be distinct from the training root and dataset manifest".into());
+    }
+    let existing_plan = output_candidate.join("training-plan.json");
+    if existing_plan.exists() {
+        return Err("Training output directory already contains training-plan.json".into());
+    }
     fs::create_dir_all(&output_candidate)
         .map_err(|error| format!("Unable to create training output directory: {error}"))?;
     let output = canonicalize_inside(&root, &output_candidate, "output directory")?;
@@ -383,8 +387,11 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     let state = app.state::<TrainingState>();
     {
         let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
-        if let Some(existing) = jobs.get(&request.job_id) {
-            if existing.status == "running" { return Err("Training job is already running".into()); }
+        if jobs.values().filter(|job| job.status == "running").count() >= MAX_ACTIVE_TRAINING_JOBS {
+            return Err("Maximum concurrent training jobs reached".into());
+        }
+        if jobs.contains_key(&request.job_id) {
+            return Err("Training job ID has already been used".into());
         }
         jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new(), progress: None, artifact: None });
     }
@@ -633,6 +640,20 @@ mod tests {
             progress: None,
             artifact: None,
         }
+    }
+
+    #[test]
+    fn recovers_running_jobs_after_restart() {
+        let state = PersistedTrainingState { version: TRAINING_STATE_VERSION, jobs: vec![job_status("job-running", "running", "", "")] };
+        let mut recovered = state.jobs.clone();
+        for job in &mut recovered {
+            if job.status == "running" {
+                job.status = "failed".into();
+                job.stderr = "Training job interrupted by application restart".into();
+            }
+        }
+        assert_eq!(recovered[0].status, "failed");
+        assert_eq!(recovered[0].stderr, "Training job interrupted by application restart");
     }
 
     #[test]
