@@ -6,29 +6,114 @@
 <title>WoHo AI</title>
 <style>
 *{box-sizing:border-box}body{margin:0;min-width:960px;min-height:100vh;background:#09090d;color:#f5f5f7;font:14px system-ui,sans-serif}
-.shell{display:grid;grid-template-columns:230px 1fr;min-height:100vh}.side{padding:22px 16px;border-right:1px solid #24242e;background:#0c0c12;display:flex;flex-direction:column;gap:18px}
-.brand{font-size:22px;font-weight:800}.new{padding:10px;border:1px solid #363646;border-radius:10px;background:#181824;color:#fff;text-align:left}.nav{display:grid;gap:6px;color:#aaaab8}.nav span{padding:9px;border-radius:8px}.nav span:first-child{background:#191923;color:#fff}.foot{margin-top:auto;color:#696979;font-size:12px}
-.main{display:grid;grid-template-rows:auto 1fr auto}.top{display:flex;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #24242e}.top small{display:block;color:#777786;margin-top:3px}.status{padding:6px 10px;border:1px solid #30402f;border-radius:999px;color:#b8d8ad;font-size:12px}
+.shell{display:grid;grid-template-columns:250px 1fr;min-height:100vh}.side{padding:22px 16px;border-right:1px solid #24242e;background:#0c0c12;display:flex;flex-direction:column;gap:18px}
+.brand{font-size:22px;font-weight:800}.new,.model-action{padding:10px;border:1px solid #363646;border-radius:10px;background:#181824;color:#fff;text-align:left}.nav{display:grid;gap:6px;color:#aaaab8}.nav span{padding:9px;border-radius:8px}.nav span:first-child{background:#191923;color:#fff}
+.models{border-top:1px solid #24242e;padding-top:16px}.models label{display:block;color:#777786;font-size:11px;text-transform:uppercase;font-weight:700;margin-bottom:7px}.models select{width:100%;padding:9px;border:1px solid #343442;border-radius:9px;background:#111119;color:#fff}.model-action{width:100%;margin-top:8px;cursor:pointer}.model-action:disabled{opacity:.45;cursor:not-allowed}.model-state{margin-top:7px;color:#777786;font-size:11px;line-height:1.4}
+.foot{margin-top:auto;color:#696979;font-size:12px}.main{display:grid;grid-template-rows:auto 1fr auto}.top{display:flex;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #24242e}.top small{display:block;color:#777786;margin-top:3px}.status{padding:6px 10px;border:1px solid #30402f;border-radius:999px;color:#b8d8ad;font-size:12px}
 .chat{padding:28px 15%;overflow:auto}.msg{max-width:780px;margin-bottom:22px}.msg.user{margin-left:auto;padding:14px 16px;border-radius:14px;background:#1b1b27}.role{color:#8f8fa0;font-size:12px;font-weight:700;text-transform:uppercase}.text{margin-top:8px;line-height:1.6;white-space:pre-wrap}
 .compose{display:grid;grid-template-columns:1fr auto;gap:10px;padding:18px 15%;border-top:1px solid #24242e}.compose input{padding:14px;border:1px solid #343442;border-radius:12px;background:#111119;color:#fff}.compose button{padding:0 20px;border:0;border-radius:12px;background:#fff;color:#09090d;font-weight:700}
 </style>
 </head>
 <body>
 <div class="shell">
-<aside class="side"><div class="brand">WoHo AI</div><button class="new" id="new">+ New Chat</button><nav class="nav"><span>Chats</span><span>Projects</span><span>Files</span><span>Tools</span><span>Agents</span></nav><div class="foot">Local Agent · llama.cpp</div></aside>
-<section class="main"><header class="top"><div><strong>WoHo AI</strong><small>Local-first agent workspace</small></div><span class="status">Agent Ready</span></header>
-<div class="chat" id="chat"><article class="msg"><div class="role">WoHo AI</div><div class="text">Hello! I’m WoHo AI. Messages are sent through the Tauri agent bridge to the local runtime.</div></article></div>
-<form class="compose" id="form"><input id="input" placeholder="Ask WoHo AI..." aria-label="Ask WoHo AI"><button>Send</button></form>
-</section></div>
+<aside class="side">
+  <div class="brand">WoHo AI</div>
+  <button class="new" id="new">+ New Chat</button>
+  <nav class="nav"><span>Chats</span><span>Projects</span><span>Files</span><span>Tools</span><span>Agents</span></nav>
+  <section class="models">
+    <label for="model">Local model</label>
+    <select id="model" aria-label="Local model"></select>
+    <button class="model-action" id="modelAction">Install model</button>
+    <div class="model-state" id="modelState">Checking local models…</div>
+  </section>
+  <div class="foot">Local Agent · llama.cpp</div>
+</aside>
+<section class="main">
+  <header class="top"><div><strong>WoHo AI</strong><small>Local-first agent workspace</small></div><span class="status" id="status">Agent Ready</span></header>
+  <div class="chat" id="chat"><article class="msg"><div class="role">WoHo AI</div><div class="text">Hello! I’m WoHo AI. Install the local model to start chatting.</div></article></div>
+  <form class="compose" id="form"><input id="input" placeholder="Ask WoHo AI..." aria-label="Ask WoHo AI"><button>Send</button></form>
+</section>
+</div>
 <script>
-const chat=document.getElementById('chat'),input=document.getElementById('input');
-const conversationId=crypto.randomUUID();
-const MODEL_ID='woho-model-placeholder';
+const chat=document.getElementById('chat');
+const input=document.getElementById('input');
+const modelSelect=document.getElementById('model');
+const modelAction=document.getElementById('modelAction');
+const modelState=document.getElementById('modelState');
+const status=document.getElementById('status');
+let conversationId=crypto.randomUUID();
+let models=[];
+
+function invoke(command,args){
+  if(!window.__TAURI__?.core?.invoke) throw new Error('Tauri runtime is not available');
+  return window.__TAURI__.core.invoke(command,args);
+}
+
+function selectedModel(){
+  return models.find(model=>model.id===modelSelect.value);
+}
+
+function renderModels(){
+  modelSelect.innerHTML='';
+  for(const model of models){
+    const option=document.createElement('option');
+    option.value=model.id;
+    option.textContent=model.name+(model.verified?' ✓':'');
+    modelSelect.appendChild(option);
+  }
+  const current=selectedModel();
+  if(current){
+    modelAction.textContent=current.verified?'Remove model':'Install model';
+    modelState.textContent=current.verified
+      ? 'Installed and SHA-256 verified.'
+      : current.installed
+        ? 'Installed file is not verified.'
+        : 'Not installed · '+Math.round(current.sizeBytes/1024/1024)+' MB download';
+    status.textContent=current.verified?'Local model ready':'Model required';
+  }
+}
+
+async function loadModels(){
+  try{
+    models=await invoke('model_list');
+    renderModels();
+  }catch(error){
+    modelState.textContent='Model manager error: '+String(error);
+    status.textContent='Model manager error';
+  }
+}
+
+modelSelect.addEventListener('change',renderModels);
+
+modelAction.addEventListener('click',async()=>{
+  const model=selectedModel();
+  if(!model)return;
+  modelAction.disabled=true;
+  try{
+    if(model.verified){
+      await invoke('model_remove',{modelId:model.id});
+    }else{
+      await invoke('model_install',{modelId:model.id});
+      await invoke('model_verify',{modelId:model.id});
+    }
+    models=await invoke('model_list');
+    renderModels();
+  }catch(error){
+    modelState.textContent='Model operation failed: '+String(error);
+  }finally{
+    modelAction.disabled=false;
+  }
+});
 
 document.getElementById('form').addEventListener('submit',async e=>{
   e.preventDefault();
   const value=input.value.trim();
   if(!value)return;
+  const model=selectedModel();
+  if(!model?.verified){
+    modelState.textContent='Install and verify the local model first.';
+    return;
+  }
   chat.insertAdjacentHTML('beforeend','<article class="msg user"><div class="role">You</div><div class="text"></div></article>');
   chat.lastElementChild.querySelector('.text').textContent=value;
   input.value='';
@@ -37,23 +122,25 @@ document.getElementById('form').addEventListener('submit',async e=>{
   pending.innerHTML='<div class="role">WoHo AI</div><div class="text">Thinking…</div>';
   chat.appendChild(pending);
   chat.scrollTop=chat.scrollHeight;
-  try {
-    if(!window.__TAURI__?.core?.invoke) throw new Error('Tauri runtime is not available');
-    const result=await window.__TAURI__.core.invoke('agent_chat',{request:{
-      conversationId,message:value,modelId:MODEL_ID,runtime:'local'
+  try{
+    const result=await invoke('agent_chat',{request:{
+      conversationId,message:value,modelId:model.id,runtime:'local'
     }});
     pending.querySelector('.text').textContent=result.text;
-  } catch(error) {
+  }catch(error){
     pending.querySelector('.text').textContent='Agent error: '+String(error);
   }
   chat.scrollTop=chat.scrollHeight;
 });
 
 document.getElementById('new').addEventListener('click',()=>{
+  conversationId=crypto.randomUUID();
   chat.innerHTML='<article class="msg"><div class="role">WoHo AI</div><div class="text">New chat ready.</div></article>';
   input.value='';
   input.focus();
 });
+
+loadModels();
 </script>
 </body>
 </html>
