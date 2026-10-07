@@ -60,3 +60,11 @@ export async function removeModel(modelId: string): Promise<void> {
 export async function verifyModel(modelId: string): Promise<ManagedModel> {
   return invoke<ManagedModel>("model_verify", { modelId });
 }
+
+export async function ensureVerifiedModel(modelId: string): Promise<ManagedModel> {
+  const model = await verifyModel(modelId);
+  if (!model.installed || !model.verified) {
+    throw new Error("Model is not installed or verified");
+  }
+  return model;
+}
