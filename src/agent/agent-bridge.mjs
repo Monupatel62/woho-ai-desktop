@@ -58,13 +58,22 @@ function createLlamaProvider() {
       }
 
       const prompt = boundedText(buildPrompt(request.messages), MAX_INPUT_BYTES, "Prompt");
-      const context = String(Number.isInteger(Number(process.env.WOHO_CONTEXT_TOKENS)) ? Number(process.env.WOHO_CONTEXT_TOKENS) : 8192);
-      const temperature = String(Number.isFinite(Number(process.env.WOHO_TEMPERATURE)) ? Number(process.env.WOHO_TEMPERATURE) : 0.2);
+      const contextValue = Number(process.env.WOHO_CONTEXT_TOKENS);
+      const temperatureValue = Number(process.env.WOHO_TEMPERATURE);
+      const context = String(Number.isInteger(contextValue) && contextValue >= 256 && contextValue <= 32768 ? contextValue : 8192);
+      const temperature = String(Number.isFinite(temperatureValue) && temperatureValue >= 0 && temperatureValue <= 2 ? temperatureValue : 0.2);
 
       return await new Promise((resolvePromise, reject) => {
         const child = spawn(executable, [
           "-m", modelPath,
           "-p", prompt,
+          "-sys", "You are WoHo AI Desktop. Answer clearly and helpfully. Do not claim to have performed actions you did not perform.",
+          "-cnv",
+          "-st",
+          "--jinja",
+          "--simple-io",
+          "--no-display-prompt",
+          "--no-show-timings",
           "-n", "512",
           "-c", context,
           "--temp", temperature,
