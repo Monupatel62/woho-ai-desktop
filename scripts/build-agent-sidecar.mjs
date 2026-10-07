@@ -60,7 +60,7 @@ execFileSync(
     "--sentinel-fuse",
     "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
   ],
-  { cwd: root, stdio: "inherit" },
+  { cwd: root, stdio: "inherit", shell: process.platform === "win32" },
 );
 
 const stat = readFileSync(output);
