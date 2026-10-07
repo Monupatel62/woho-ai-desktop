@@ -48,6 +48,7 @@ pub struct TrainingJobStatus {
 #[derive(Clone, Default)]
 pub struct TrainingState(pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>);
 
+#[derive(Debug, Serialize)]
 pub struct TrainingRunResult {
     pub job_id: String,
     pub status: &'static str,
@@ -117,7 +118,7 @@ fn python_executable() -> String {
 }
 
 #[tauri::command]
-pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Result<TrainingRunResult, String> {
+pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Result<TrainingRunResult, String> {
     safe_component(&request.job_id, "training job id", 128)?;
     safe_component(&request.base_model, "base model", 256)?;
     if request.rank == 0 || request.rank > 256 || request.alpha == 0 || request.alpha > 1024 {
@@ -154,17 +155,25 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         return Err("Training Python executable must be a trusted command name".into());
     }
 
+    let dataset_arg = dataset.to_string_lossy().into_owned();
+    let output_arg = output.to_string_lossy().into_owned();
+    let rank_arg = request.rank.to_string();
+    let alpha_arg = request.alpha.to_string();
+    let dropout_arg = request.dropout.to_string();
+    let epochs_arg = request.epochs.to_string();
+    let learning_rate_arg = request.learning_rate.to_string();
+
     let args = [
         "-m", "woho_training",
         "--job-id", request.job_id.as_str(),
         "--base-model", request.base_model.as_str(),
-        "--dataset-manifest", dataset.to_string_lossy().as_ref(),
-        "--output-dir", output.to_string_lossy().as_ref(),
-        "--rank", &request.rank.to_string(),
-        "--alpha", &request.alpha.to_string(),
-        "--dropout", &request.dropout.to_string(),
-        "--epochs", &request.epochs.to_string(),
-        "--learning-rate", &request.learning_rate.to_string(),
+        "--dataset-manifest", dataset_arg.as_str(),
+        "--output-dir", output_arg.as_str(),
+        "--rank", rank_arg.as_str(),
+        "--alpha", alpha_arg.as_str(),
+        "--dropout", dropout_arg.as_str(),
+        "--epochs", epochs_arg.as_str(),
+        "--learning-rate", learning_rate_arg.as_str(),
         "--quantization", request.quantization.as_str(),
     ];
 
@@ -290,15 +299,26 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn parses_valid_progress_event() {
-        let progress = parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":4,"total":10,"percent":40}"#, "job-1").unwrap();
-        assert_eq!(progress.phase, "training");\n        assert_eq!(progress.completed, 4);\n        assert_eq!(progress.percent, 40);
+        let progress = parse_progress_line(
+            r#"{"status":"progress","jobId":"job-1","phase":"training","completed":4,"total":10,"percent":40}"#,
+            "job-1",
+        ).unwrap();
+        assert_eq!(progress.phase, "training");
+        assert_eq!(progress.completed, 4);
+        assert_eq!(progress.percent, 40);
     }
 
     #[test]
-    fn rejects_invalid_progress_event() {\n        assert!(parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":11,"total":10,"percent":110}"#, "job-1").is_none());
-        assert!(parse_progress_line(r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#, "job-1").is_none());
+    fn rejects_invalid_progress_event() {
+        assert!(parse_progress_line(
+            r#"{"status":"progress","jobId":"job-1","phase":"training","completed":11,"total":10,"percent":110}"#,
+            "job-1",
+        ).is_none());
+        assert!(parse_progress_line(
+            r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#,
+            "job-1",
+        ).is_none());
     }
 
     #[test]
