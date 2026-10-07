@@ -47,6 +47,7 @@ struct ModelManifest {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct TrustedModel {
     id: String,
     name: String,
