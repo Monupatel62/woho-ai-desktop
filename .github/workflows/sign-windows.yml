@@ -20,17 +20,13 @@ jobs:
       LLAMA_CPP_SHA256: b608455b0109793f774537d63d15d4cf2098ddbc5b200ebc9a648e1d85369666
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10.17.0
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - uses: dtolnay/rust-toolchain@stable
-
       - run: pnpm install --no-frozen-lockfile
       - name: Build production agent sidecar
         run: pnpm build:agent-sidecar
@@ -56,7 +52,6 @@ jobs:
 
       - name: Generate Tauri application icons
         run: pnpm exec tauri icon src-tauri/icons/icon.png
-
       - name: Build unsigned Windows installers
         run: pnpm exec tauri build
 
@@ -139,8 +134,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          gh release upload "$env:RELEASE_TAG" \
-            "$env:RUNNER_TEMP/signed-installers/*.exe" \
-            "$env:RUNNER_TEMP/signed-installers/*.msi" \
-            --repo "${{ github.repository }}" \
-            --clobber
+          $assets = @(
+            Get-ChildItem "$env:RUNNER_TEMP/signed-installers" -Filter "*.exe" -File
+            Get-ChildItem "$env:RUNNER_TEMP/signed-installers" -Filter "*.msi" -File
+          ) | ForEach-Object { $_.FullName }
+          if ($assets.Count -lt 2) {
+            throw "No signed release assets found"
+          }
+          gh release upload "$env:RELEASE_TAG" $assets --repo "${{ github.repository }}" --clobber
