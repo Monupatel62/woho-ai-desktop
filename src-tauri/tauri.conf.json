@@ -27,6 +27,10 @@
     "targets": [
       "msi",
       "nsis"
+    ],
+    "resources": [
+      "resources/agent/woho-agent.exe",
+      "resources/llama/"
     ]
   }
 }
