@@ -49,7 +49,7 @@ export function validateDataset(dataset: unknown): asserts dataset is WoHoDatase
 }
 
 export function parseDatasetJson(input: string): WoHoDataset {
-  if (Buffer.byteLength(input, "utf8") > 16 * 1024 * 1024) throw new Error("Dataset exceeds 16 MiB");
+  if (new TextEncoder().encode(input).byteLength > 16 * 1024 * 1024) throw new Error("Dataset exceeds 16 MiB");
   const parsed: unknown = JSON.parse(input);
   validateDataset(parsed);
   return parsed;
