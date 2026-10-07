@@ -29,7 +29,7 @@
       "nsis"
     ],
     "resources": [
-      "resources/agent/woho-agent.exe",
+      "resources/agent/",
       "resources/llama/"
     ]
   }
