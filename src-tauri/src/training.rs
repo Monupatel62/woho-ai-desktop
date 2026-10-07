@@ -164,7 +164,6 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     let learning_rate_arg = request.learning_rate.to_string();
 
     let args = [
-        "-m", "woho_training",
         "--job-id", request.job_id.as_str(),
         "--base-model", request.base_model.as_str(),
         "--dataset-manifest", dataset_arg.as_str(),
@@ -191,11 +190,15 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     }
 
     let resource_dir = app.path().resource_dir().map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
-    let python_path = resource_dir.to_string_lossy().into_owned();
-
+    let training_script = resource_dir.join("woho_training.py");
+    if !training_script.is_file() {
+        if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Bundled training runtime is missing".into(); } }
+        return Err("Bundled training runtime is missing".into());
+    }
+    let training_script_arg = training_script.to_string_lossy().into_owned();
     let mut child = Command::new(&executable)
+        .arg(training_script_arg.as_str())
         .args(args)
-        .env("PYTHONPATH", &python_path)
         .current_dir(&root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -204,8 +207,8 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         .map_err(|error| format!("Failed to start QLoRA runtime: {error}"))?;
 
     let overflow = Arc::new(AtomicBool::new(false));
-    let stdout_reader = child.stdout.take().ok_or_else(|| "Training stdout pipe unavailable".to_string())?;
-    let stderr_reader = child.stderr.take().ok_or_else(|| "Training stderr pipe unavailable".to_string())?;
+    let stdout_reader = match child.stdout.take() { Some(reader) => reader, None => { let _ = child.kill(); let _ = child.wait(); if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training stdout pipe unavailable".into(); } } return Err("Training stdout pipe unavailable".into()); } };
+    let stderr_reader = match child.stderr.take() { Some(reader) => reader, None => { let _ = child.kill(); let _ = child.wait(); if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training stderr pipe unavailable".into(); } } return Err("Training stderr pipe unavailable".into()); } };
 
     fn drain_output<R: Read + Send + 'static>(
         mut reader: R,
@@ -254,6 +257,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         if started.elapsed() > Duration::from_secs(MAX_RUNTIME_SECS) {
             let _ = child.kill();
             let _ = child.wait();
+            if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "QLoRA training exceeded the runtime limit".into(); } }
             return Err("QLoRA training exceeded the runtime limit".into());
         }
         if overflow.load(Ordering::SeqCst) {
@@ -261,6 +265,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             let _ = child.wait();
             let _ = stdout_handle.join();
             let _ = stderr_handle.join();
+            if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Training output exceeds the size limit".into(); } }
             return Err("Training output exceeds the size limit".into());
         }
         if let Some(status) = child.try_wait().map_err(|error| format!("Training process failed: {error}"))? {
