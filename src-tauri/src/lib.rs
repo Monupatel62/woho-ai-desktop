@@ -7,6 +7,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{path::BaseDirectory, Manager};
 
+mod training;
+
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MODEL_BYTES: u64 = 512 * 1024 * 1024;
@@ -564,7 +566,8 @@ pub fn run() {
             model_install,
             model_verify,
             model_remove,
-            agent_chat
+            agent_chat,
+            training::run_training
         ])
         .run(tauri::generate_context!())
         .expect("error while running WoHo AI Desktop");
