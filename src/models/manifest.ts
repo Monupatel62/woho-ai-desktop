@@ -15,7 +15,7 @@ export const BUILTIN_MODELS: readonly TrustedModel[] = [
     name: "Qwen3 0.6B Q4_0",
     format: "gguf",
     contextTokens: 8192,
-    filename: "Qwen3-0.6B-Q4_0.gguf",
+    filename: "qwen3-0.6b-q4_0.gguf",
     sizeBytes: 428970080,
     sha256: "da2572f16c06133561ce56accaa822216f2391ef4d37fba427801cd6736417d4",
     downloadUrl:
