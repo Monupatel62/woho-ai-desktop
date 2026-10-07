@@ -21,6 +21,6 @@
   "dependencies": {
     "@woho/agents": "0.3.28",
     "@woho/core": "0.2.24",
-    "@tauri-apps/api": "2.8.5"
+    "@tauri-apps/api": "2.12.1"
   }
 }
