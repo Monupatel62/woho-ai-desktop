@@ -426,9 +426,75 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             let _ = state.persist();
             return Err("Training output exceeds the size limit".into());
         }
-        if let Some(status) = child.try_wait().map_err(|error| format!("Training process failed: {error}"))? {
-            let stdout = stdout_handle.join().map_err(|_| "Training stdout reader failed".to_string())??;
-            let stderr = stderr_handle.join().map_err(|_| "Training stderr reader failed".to_string())??;
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let message = format!("Training process status check failed: {error}");
+                if let Ok(mut jobs) = state.0.lock() {
+                    if let Some(job) = jobs.get_mut(&request.job_id) {
+                        job.status = "failed".into();
+                        job.stderr = message.clone();
+                    }
+                }
+                let _ = state.persist();
+                return Err(message);
+            }
+        };
+        if let Some(status) = status {
+            let stdout = match stdout_handle.join() {
+                Ok(result) => match result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if let Ok(mut jobs) = state.0.lock() {
+                            if let Some(job) = jobs.get_mut(&request.job_id) {
+                                job.status = "failed".into();
+                                job.stderr = error.clone();
+                            }
+                        }
+                        let _ = state.persist();
+                        return Err(error);
+                    }
+                },
+                Err(_) => {
+                    let error = "Training stdout reader thread failed".to_string();
+                    if let Ok(mut jobs) = state.0.lock() {
+                        if let Some(job) = jobs.get_mut(&request.job_id) {
+                            job.status = "failed".into();
+                            job.stderr = error.clone();
+                        }
+                    }
+                    let _ = state.persist();
+                    return Err(error);
+                }
+            };
+            let stderr = match stderr_handle.join() {
+                Ok(result) => match result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if let Ok(mut jobs) = state.0.lock() {
+                            if let Some(job) = jobs.get_mut(&request.job_id) {
+                                job.status = "failed".into();
+                                job.stderr = error.clone();
+                            }
+                        }
+                        let _ = state.persist();
+                        return Err(error);
+                    }
+                },
+                Err(_) => {
+                    let error = "Training stderr reader thread failed".to_string();
+                    if let Ok(mut jobs) = state.0.lock() {
+                        if let Some(job) = jobs.get_mut(&request.job_id) {
+                            job.status = "failed".into();
+                            job.stderr = error.clone();
+                        }
+                    }
+                    let _ = state.persist();
+                    return Err(error);
+                }
+            };
             let progress = {
                 let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
                 jobs.get(&request.job_id).and_then(|job| job.progress.clone())
