@@ -35,7 +35,7 @@ pub struct TrainingRunRequest {
     pub quantization: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TrainingProgress { pub phase: String, pub completed: u64, pub total: u64, pub percent: u8 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
