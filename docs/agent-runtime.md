@@ -9,7 +9,7 @@ UI
   -> @woho/agents AgentRuntime
   -> @woho/core AIClient
   -> llama.cpp provider
-  -> GGUF model
+  -> verified GGUF model
 ```
 
 ## Development runtime
@@ -21,10 +21,12 @@ Managed runtime files are expected under the Tauri app-data directory:
 - `runtimes/llama/llama-cli.exe` on Windows
 - `models/<model-id>.gguf`
 
-The model id is validated before the path is resolved. The worker uses llama.cpp's `-m`, `-p`, `-n`, `-c` and `--temp` options for bounded non-interactive generation. llama.cpp requires GGUF model files for local inference. See the official llama.cpp documentation for GGUF and llama-cli usage.
+The model manager ships a trusted manifest. The current development model is `qwen3-0.6b-q4_0`, backed by the `ggml-org/Qwen3-0.6B-GGUF` Q4_0 artifact. Installation is restricted to the bundled HTTPS source, bounded to 512 MiB, downloaded to a unique temporary file, SHA-256 verified, flushed, and atomically renamed into the managed model directory.
+
+Chat requests verify the installed model against the pinned size and SHA-256 before starting llama.cpp. Model binaries are never committed to Git.
 
 ## Production
 
 The Node bridge will be packaged as a Tauri sidecar so users do not need to install Node separately. Tauri supports embedding external binaries/sidecars and resolves platform-specific target binaries during bundling. See the official Tauri sidecar documentation.
 
-This phase intentionally does not commit model binaries or native llama.cpp binaries to Git.
+The native llama.cpp runtime is also expected to be installed into the managed runtime directory by a later production-runtime step. The model manager intentionally downloads model data after installation rather than embedding hundreds of megabytes in the installer.
