@@ -558,6 +558,7 @@ async fn agent_chat(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(training::TrainingState::default())
         .invoke_handler(tauri::generate_handler![
             health,
             runtime_status,
@@ -567,7 +568,9 @@ pub fn run() {
             model_verify,
             model_remove,
             agent_chat,
-            training::run_training
+            training::run_training,
+            training::training_job_status,
+            training::training_job_clear
         ])
         .run(tauri::generate_context!())
         .expect("error while running WoHo AI Desktop");
