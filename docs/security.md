@@ -28,3 +28,12 @@ Rules:
 - The Tauri command launches the controlled agent bridge; it does not accept an arbitrary executable path from the UI.
 - llama.cpp is launched without a shell and with bounded prompt/output sizes.
 - Production packaging will ship the Node agent bridge as a Tauri sidecar; development can use the repository worker with Node.
+
+
+## Production runtime resources
+
+- The Windows installer bundles the agent as a Node SEA executable; no user-installed Node runtime is required.
+- The release workflow downloads a pinned llama.cpp archive from the official `ggml-org/llama.cpp` release, verifies its SHA-256, and only then places it in the build-only resource directory.
+- Generated runtime resources are ignored by Git and are not accepted from pull-request source changes.
+- At runtime, production resource paths are resolved by Tauri from the application resource directory; the UI cannot override them.
+- The packaged llama.cpp executable is launched without a shell.
