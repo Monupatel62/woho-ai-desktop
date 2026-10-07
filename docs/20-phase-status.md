@@ -5,7 +5,7 @@
 | 1 | Tauri Windows desktop shell |
 | 2 | @woho/agents runtime bridge implemented |
 | 3 | Managed llama.cpp process bridge implemented |
-| 4 | Qwen3 0.6B GGUF trusted model integration |
+| 4 | **Complete — Qwen3 0.6B GGUF trusted model integration with real local chat** |
 | 5 | Dataset example schema |
 | 6 | Reproducible training configuration |
 | 7 | QLoRA configuration |
@@ -18,7 +18,7 @@
 | 14 | Project workspace boundary |
 | 15 | Coding-agent orchestration boundary |
 | 16 | Optional cloud provider |
-| 17 | Verified model manager with install/remove/verify commands |
+| 17 | **Complete — trusted manifest, list/install/verify/remove, atomic install, exact size + SHA-256 verification, and desktop UI** |
 | 18 | Security validation baseline |
 | 19 | Regression tests |
 | 20 | Windows MSI/NSIS production pipeline with bundled Node SEA agent + verified llama.cpp CPU runtime |
