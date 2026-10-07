@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "qwen3-0.6b-q4_0",
+      "name": "Qwen3 0.6B Q4_0",
+      "format": "gguf",
+      "filename": "qwen3-0.6b-q4_0.gguf",
+      "sizeBytes": 428970080,
+      "sha256": "da2572f16c06133561ce56accaa822216f2391ef4d37fba427801cd6736417d4",
+      "downloadUrl": "https://huggingface.co/ggml-org/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf",
+      "source": "https://huggingface.co/ggml-org/Qwen3-0.6B-GGUF",
+      "license": "apache-2.0",
+      "contextTokens": 8192
+    }
+  ]
+}
