@@ -6,11 +6,18 @@ export interface ProjectWorkspace {
 }
 
 export function validateRelativePath(path: string): void {
-  if (!path || path.includes("\0") || path.startsWith("/") || /^[a-zA-Z]:/.test(path)) {
-    throw new Error("Workspace path must be relative");
+  if (!path || path.includes("\0")) {
+    throw new Error("Workspace path contains an invalid character");
   }
+
   const normalized = path.replaceAll("\\", "/");
-  if (normalized.split("/").includes("..")) {
-    throw new Error("Workspace path escapes project root");
+
+  if (
+    normalized.startsWith("/") ||
+    /^[a-zA-Z]:\//.test(normalized) ||
+    normalized.startsWith("//") ||
+    normalized.split("/").includes("..")
+  ) {
+    throw new Error("Workspace path must remain inside project root");
   }
 }
