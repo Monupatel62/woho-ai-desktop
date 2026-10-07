@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -30,7 +32,18 @@ pub struct TrainingRunRequest {
     pub quantization: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
+pub struct TrainingJobStatus {
+    pub job_id: String,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Clone, Default)]
+pub struct TrainingState(pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>);
+
 pub struct TrainingRunResult {
     pub job_id: String,
     pub status: &'static str,
@@ -129,6 +142,15 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         return Err("Training command has too many arguments".into());
     }
 
+    let state = app.state::<TrainingState>();
+    {
+        let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+        if let Some(existing) = jobs.get(&request.job_id) {
+            if existing.status == "running" { return Err("Training job is already running".into()); }
+        }
+        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new() });
+    }
+
     let mut child = Command::new(&executable)
         .args(args)
         .current_dir(&root)
@@ -138,6 +160,32 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         .spawn()
         .map_err(|error| format!("Failed to start QLoRA runtime: {error}"))?;
 
+    let overflow = Arc::new(AtomicBool::new(false));
+    let stdout_reader = child.stdout.take().ok_or_else(|| "Training stdout pipe unavailable".to_string())?;
+    let stderr_reader = child.stderr.take().ok_or_else(|| "Training stderr pipe unavailable".to_string())?;
+
+    fn drain_output<R: Read + Send + 'static>(
+        mut reader: R,
+        overflow: Arc<AtomicBool>,
+    ) -> thread::JoinHandle<Result<Vec<u8>, String>> {
+        thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut buffer = [0u8; 32 * 1024];
+            loop {
+                let size = reader.read(&mut buffer).map_err(|error| format!("Training output read failed: {error}"))?;
+                if size == 0 { break; }
+                if output.len().saturating_add(size) <= MAX_OUTPUT_BYTES {
+                    output.extend_from_slice(&buffer[..size]);
+                } else {
+                    overflow.store(true, Ordering::SeqCst);
+                }
+            }
+            Ok(output)
+        })
+    }
+
+    let stdout_handle = drain_output(stdout_reader, Arc::clone(&overflow));
+    let stderr_handle = drain_output(stderr_reader, Arc::clone(&overflow));
     let started = Instant::now();
     loop {
         if started.elapsed() > Duration::from_secs(MAX_RUNTIME_SECS) {
@@ -145,30 +193,27 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
             let _ = child.wait();
             return Err("QLoRA training exceeded the runtime limit".into());
         }
+        if overflow.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            return Err("Training output exceeds the size limit".into());
+        }
         if let Some(status) = child.try_wait().map_err(|error| format!("Training process failed: {error}"))? {
-            let mut stdout = Vec::new();
-            let mut stderr = Vec::new();
-            if let Some(mut stream) = child.stdout.take() {
-                let mut buffer = [0u8; 32 * 1024];
-                while let Ok(size) = stream.read(&mut buffer) {
-                    if size == 0 { break; }
-                    append_bounded(&mut stdout, &buffer[..size])?;
-                }
-            }
-            if let Some(mut stream) = child.stderr.take() {
-                let mut buffer = [0u8; 32 * 1024];
-                while let Ok(size) = stream.read(&mut buffer) {
-                    if size == 0 { break; }
-                    append_bounded(&mut stderr, &buffer[..size])?;
-                }
-            }
-            return Ok(TrainingRunResult {
+            let stdout = stdout_handle.join().map_err(|_| "Training stdout reader failed".to_string())??;
+            let stderr = stderr_handle.join().map_err(|_| "Training stderr reader failed".to_string())??;
+            let result = TrainingRunResult {
                 job_id: request.job_id,
                 status: if status.success() { "completed" } else { "failed" },
                 exit_code: status.code().unwrap_or(-1),
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
-            });
+            };
+            if let Ok(mut jobs) = state.0.lock() {
+                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone() });
+            }
+            return Ok(result);
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -193,4 +238,26 @@ mod tests {
         assert!(relative_path(root, "../outside.jsonl", "dataset").is_err());
         assert!(relative_path(root, "/absolute/path", "dataset").is_err());
     }
+}
+
+
+#[tauri::command]
+pub fn training_job_status(
+    state: tauri::State<'_, TrainingState>,
+    job_id: String,
+) -> Result<TrainingJobStatus, String> {
+    safe_component(&job_id, "training job id", 128)?;
+    let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+    jobs.get(&job_id).cloned().ok_or_else(|| "Training job not found".into())
+}
+
+#[tauri::command]
+pub fn training_job_clear(
+    state: tauri::State<'_, TrainingState>,
+    job_id: String,
+) -> Result<(), String> {
+    safe_component(&job_id, "training job id", 128)?;
+    let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+    jobs.remove(&job_id);
+    Ok(())
 }
