@@ -7,21 +7,21 @@
 | 3 | Managed llama.cpp process bridge implemented |
 | 4 | **Complete — Qwen3 0.6B GGUF trusted model integration with real local chat** |
 | 5 | **Complete — versioned dataset schema, validation, deterministic JSONL export, provenance metadata, and regression tests** |
-| 6 | Reproducible training configuration |
-| 7 | QLoRA configuration |
-| 8 | Deterministic benchmark scorer |
-| 9 | GGUF model format contract |
-| 10 | Local runtime abstraction |
-| 11 | Tool registry |
-| 12 | Permission engine |
-| 13 | Memory store contract |
-| 14 | Project workspace boundary |
-| 15 | Coding-agent orchestration boundary |
-| 16 | Optional cloud provider |
+| 6 | **Complete — reproducible QLoRA training configuration with pinned defaults and validation** |
+| 7 | **Complete — validated QLoRA hyperparameter contract** |
+| 8 | **Complete — deterministic exact-match benchmark scorer and summary** |
+| 9 | **Complete — GGUF artifact identity, size, digest, and filename contract** |
+| 10 | **Complete — runtime registry with duplicate-registration protection** |
+| 11 | **Complete — validated tool registry with duplicate protection and risk metadata** |
+| 12 | **Complete — explicit permission context and enforcement boundary** |
+| 13 | **Complete — bounded in-memory memory store contract** |
+| 14 | **Complete — workspace validation and write-permission boundary** |
+| 15 | **Complete — permission-gated coding-agent runtime orchestration boundary** |
+| 16 | **Complete — optional cloud runtime provider abstraction** |
 | 17 | **Complete — trusted manifest, list/install/verify/remove, atomic install, exact size + SHA-256 verification, and desktop UI** |
-| 18 | Security validation baseline |
-| 19 | Regression tests |
-| 20 | Windows MSI/NSIS production pipeline with bundled Node SEA agent + verified llama.cpp CPU runtime |
+| 18 | **Complete — security baseline assertions covering runtime/model/input/permission boundaries** |
+| 19 | **Complete — architecture regression coverage added alongside existing model/dataset tests** |
+| 20 | **Complete — Windows MSI/NSIS production pipeline with bundled Node SEA agent + verified llama.cpp CPU runtime** |
 
 ## Model policy
 
