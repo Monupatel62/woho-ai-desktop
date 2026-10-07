@@ -58,13 +58,33 @@ function createLlamaProvider() {
       }
 
       const prompt = boundedText(buildPrompt(request.messages), MAX_INPUT_BYTES, "Prompt");
-      const context = String(Number.isInteger(Number(process.env.WOHO_CONTEXT_TOKENS)) ? Number(process.env.WOHO_CONTEXT_TOKENS) : 8192);
-      const temperature = String(Number.isFinite(Number(process.env.WOHO_TEMPERATURE)) ? Number(process.env.WOHO_TEMPERATURE) : 0.2);
+      const contextValue = Number(process.env.WOHO_CONTEXT_TOKENS);
+      const temperatureValue = Number(process.env.WOHO_TEMPERATURE);
+      const context = String(Number.isInteger(contextValue) && contextValue >= 256 && contextValue <= 32768 ? contextValue : 8192);
+      const temperature = String(Number.isFinite(temperatureValue) && temperatureValue >= 0 && temperatureValue <= 2 ? temperatureValue : 0.2);
 
       return await new Promise((resolvePromise, reject) => {
+        let settled = false;
+        const fail = (error) => {
+          if (settled) return;
+          settled = true;
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+        const succeed = (value) => {
+          if (settled) return;
+          settled = true;
+          resolvePromise(value);
+        };
         const child = spawn(executable, [
           "-m", modelPath,
           "-p", prompt,
+          "-sys", "You are WoHo AI Desktop. Answer clearly and helpfully. Do not claim to have performed actions you did not perform.",
+          "-cnv",
+          "-st",
+          "--jinja",
+          "--simple-io",
+          "--no-display-prompt",
+          "--no-show-timings",
           "-n", "512",
           "-c", context,
           "--temp", temperature,
@@ -73,11 +93,15 @@ function createLlamaProvider() {
         let stdout = "";
         let stderr = "";
         let outputBytes = 0;
+        const timeout = setTimeout(() => {
+          child.kill();
+          fail(new Error("llama.cpp execution timed out"));
+        }, 120_000);
         const append = (chunk, target) => {
           outputBytes += chunk.byteLength;
           if (outputBytes > MAX_OUTPUT_BYTES) {
             child.kill();
-            reject(new Error("llama.cpp output exceeds size limit"));
+            fail(new Error("llama.cpp output exceeds size limit"));
             return;
           }
           if (target === "stdout") stdout += chunk.toString("utf8");
@@ -85,13 +109,19 @@ function createLlamaProvider() {
         };
         child.stdout.on("data", (chunk) => append(chunk, "stdout"));
         child.stderr.on("data", (chunk) => append(chunk, "stderr"));
-        child.on("error", (error) => reject(new Error("Failed to start llama.cpp: " + error.message)));
+        child.on("error", (error) => {
+          clearTimeout(timeout);
+          fail(new Error("Failed to start llama.cpp: " + error.message));
+        });
         child.on("close", (code) => {
+          clearTimeout(timeout);
+          if (settled) return;
           if (code !== 0) {
-            reject(new Error("llama.cpp exited with code " + String(code)));
+            const detail = stderr.trim();
+            fail(new Error("llama.cpp exited with code " + String(code) + (detail ? ": " + detail.slice(0, 1024) : "")));
             return;
           }
-          resolvePromise({
+          succeed({
             id: "llama-local",
             model: modelId,
             text: stdout.trim(),

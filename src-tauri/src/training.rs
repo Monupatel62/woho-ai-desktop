@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -88,16 +88,35 @@ impl TrainingState {
         let mut jobs = std::collections::HashMap::new();
         let mut recovered = false;
         if path.is_file() {
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|error| format!("Unable to inspect persisted training state: {error}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err("Persisted training state must not be a symlink".into());
+            }
             let bytes = fs::read(&path)
                 .map_err(|error| format!("Unable to read persisted training state: {error}"))?;
-            let persisted = decode_persisted_state(&bytes)?;
-            for mut job in persisted.jobs.into_iter().take(MAX_PERSISTED_JOBS) {
-                if job.status == "running" {
-                    job.status = "failed".into();
-                    job.stderr = "Training job interrupted by application restart".into();
+            match decode_persisted_state(&bytes) {
+                Ok(persisted) => {
+                    for mut job in persisted.jobs.into_iter().take(MAX_PERSISTED_JOBS) {
+                        if job.status == "running" {
+                            job.status = "failed".into();
+                            job.stderr = "Training job interrupted by application restart".into();
+                            recovered = true;
+                        }
+                        jobs.insert(job.job_id.clone(), job);
+                    }
+                }
+                Err(error) => {
+                    let stamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|_| "System clock is invalid".to_string())?
+                        .as_millis();
+                    let quarantine = root.join(format!("jobs.corrupt-{stamp}.json"));
+                    fs::rename(&path, &quarantine).map_err(|rename_error| {
+                        format!("{error}; unable to quarantine corrupt training state: {rename_error}")
+                    })?;
                     recovered = true;
                 }
-                jobs.insert(job.job_id.clone(), job);
             }
         }
         let state = Self(Arc::new(Mutex::new(jobs)), Arc::new(path), Arc::new(Mutex::new(())));
@@ -134,9 +153,41 @@ impl TrainingState {
         let temp = path.with_extension("json.tmp");
         fs::write(&temp, bytes)
             .map_err(|error| format!("Unable to write training state: {error}"))?;
-        fs::rename(&temp, path)
-            .map_err(|error| format!("Unable to atomically replace training state: {error}"))?;
+        replace_persisted_state(&temp, path)?;
         Ok(())
+    }
+}
+
+
+fn replace_persisted_state(temp: &Path, target: &Path) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        fs::rename(temp, target)
+            .map_err(|error| format!("Unable to atomically replace training state: {error}"))?;
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        let backup = target.with_extension("json.previous");
+        if backup.exists() {
+            let _ = fs::remove_file(&backup);
+        }
+        if target.exists() {
+            fs::rename(target, &backup)
+                .map_err(|error| format!("Unable to stage previous training state: {error}"))?;
+        }
+        match fs::rename(temp, target) {
+            Ok(()) => {
+                let _ = fs::remove_file(&backup);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = fs::remove_file(target);
+                let _ = fs::rename(&backup, target);
+                Err(format!("Unable to replace training state: {error}"))
+            }
+        }
     }
 }
 

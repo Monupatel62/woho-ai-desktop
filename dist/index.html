@@ -63,7 +63,7 @@ function renderModels(){
   }
   const current=selectedModel();
   if(current){
-    modelAction.textContent=current.verified?'Remove model':'Install model';
+    modelAction.textContent=current.verified?'Remove model':current.installed?'Repair model':'Install model';
     modelState.textContent=current.verified
       ? 'Installed and SHA-256 verified.'
       : current.installed
@@ -93,6 +93,7 @@ modelAction.addEventListener('click',async()=>{
     if(model.verified){
       await invoke('model_remove',{modelId:model.id});
     }else{
+      if(model.installed) await invoke('model_remove',{modelId:model.id});
       await invoke('model_install',{modelId:model.id});
       await invoke('model_verify',{modelId:model.id});
     }
@@ -114,6 +115,9 @@ document.getElementById('form').addEventListener('submit',async e=>{
     modelState.textContent='Install and verify the local model first.';
     return;
   }
+  const submit=e.currentTarget.querySelector('button');
+  submit.disabled=true;
+  input.disabled=true;
   chat.insertAdjacentHTML('beforeend','<article class="msg user"><div class="role">You</div><div class="text"></div></article>');
   chat.lastElementChild.querySelector('.text').textContent=value;
   input.value='';
@@ -129,6 +133,10 @@ document.getElementById('form').addEventListener('submit',async e=>{
     pending.querySelector('.text').textContent=result.text;
   }catch(error){
     pending.querySelector('.text').textContent='Agent error: '+String(error);
+  }finally{
+    submit.disabled=false;
+    input.disabled=false;
+    input.focus();
   }
   chat.scrollTop=chat.scrollHeight;
 });
