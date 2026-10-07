@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   typescript:
@@ -103,14 +103,3 @@ jobs:
           path: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
-      - name: Upload v0.1.0 release assets
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload v0.1.0 \
-            src-tauri/target/release/bundle/msi/*.msi \
-            src-tauri/target/release/bundle/nsis/*.exe \
-            --repo "${{ github.repository }}" \
-            --clobber
