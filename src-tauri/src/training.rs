@@ -320,7 +320,19 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     }
     state.persist()?;
 
-    let resource_dir = app.path().resource_dir().map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
+    let resource_dir = match app.path().resource_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            if let Ok(mut jobs) = state.0.lock() {
+                if let Some(job) = jobs.get_mut(&request.job_id) {
+                    job.status = "failed".into();
+                    job.stderr = format!("Unable to resolve resource directory: {error}");
+                }
+            }
+            let _ = state.persist();
+            return Err(format!("Unable to resolve resource directory: {error}"));
+        }
+    };
     let training_script = resource_dir.join("woho_training.py");
     if !training_script.is_file() {
         if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Bundled training runtime is missing".into(); } }
@@ -481,6 +493,130 @@ mod tests {
             r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#,
             "job-1",
         ).is_none());
+    }
+
+    fn write_dataset(path: &Path) -> String {
+        fs::write(path, b"{\"text\":\"hello\"}\n").unwrap();
+        let (hash, _) = sha256_file(path, MAX_ARTIFACT_BYTES).unwrap();
+        hash
+    }
+
+    fn write_plan(output: &Path, job_id: &str, dataset_hash: &str) {
+        fs::create_dir_all(output).unwrap();
+        let plan = serde_json::json!({
+            "schemaVersion": TRAINING_PLAN_SCHEMA_VERSION,
+            "jobId": job_id,
+            "datasetSha256": dataset_hash
+        });
+        fs::write(output.join("training-plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn verifies_valid_training_artifact() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        write_plan(&output, "job-1", &hash);
+        let artifact = verify_training_artifact(&root, &output, "job-1", &dataset).unwrap();
+        assert_eq!(artifact.schema_version, 1);
+        assert_eq!(artifact.path, "output/training-plan.json");
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_missing_artifact() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        assert!(verify_training_artifact(&root, &output, "job-1", &hash).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_malformed_json() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-json-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("training-plan.json"), b"not-json").unwrap();
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_wrong_schema_and_job_id() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-schema-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        write_plan(&output, "other-job", &hash);
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let plan = serde_json::json!({"schemaVersion": 999, "jobId": "job-1", "datasetSha256": hash});
+        fs::write(output.join("training-plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_dataset_hash_mismatch() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-hash-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        write_dataset(&dataset);
+        write_plan(&output, "job-1", "deadbeef");
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_artifact_outside_training_root() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let hash = write_dataset(&dataset);
+        write_plan(&outside, "job-1", &hash);
+        assert!(verify_training_artifact(&root, &outside, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_oversized_artifact() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        fs::create_dir_all(&output).unwrap();
+        let mut file = fs::File::create(output.join("training-plan.json")).unwrap();
+        use std::io::Write;
+        file.write_all(&vec![b'x'; (MAX_ARTIFACT_BYTES as usize) + 1]).unwrap();
+        drop(file);
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
     }
 
     #[test]
