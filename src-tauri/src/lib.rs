@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::Manager;
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
