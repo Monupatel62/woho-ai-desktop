@@ -72,6 +72,12 @@ describe("trusted model manager", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: original });
   });
 
+  it("rejects unknown model IDs before crossing the Tauri boundary", async () => {
+    await expect(import("../src/models/model-manager").then(({ installModel }) => installModel("../escape"))).rejects.toThrow("Unknown model");
+    await expect(import("../src/models/model-manager").then(({ removeModel }) => removeModel("../escape"))).rejects.toThrow("Unknown model");
+    await expect(import("../src/models/model-manager").then(({ verifyModel }) => verifyModel("../escape"))).rejects.toThrow("Unknown model");
+  });
+
   it("exposes uninstalled trusted models deterministically", () => {
     expect(getBuiltinModel("qwen3-0.6b-q4_0")).toMatchObject({
       installed: false,
