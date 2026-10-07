@@ -55,7 +55,11 @@ struct PersistedTrainingState {
 }
 
 #[derive(Clone)]
-pub struct TrainingState(pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>, Arc<PathBuf>);
+pub struct TrainingState(
+    pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>,
+    Arc<PathBuf>,
+    Arc<Mutex<()>>,
+);
 
 impl TrainingState {
     pub fn load(app: &tauri::AppHandle) -> Result<Self, String> {
@@ -86,7 +90,7 @@ impl TrainingState {
                 jobs.insert(job.job_id.clone(), job);
             }
         }
-        let state = Self(Arc::new(Mutex::new(jobs)), Arc::new(path));
+        let state = Self(Arc::new(Mutex::new(jobs)), Arc::new(path), Arc::new(Mutex::new(())));
         if recovered {
             state.persist()?;
         }
@@ -110,6 +114,7 @@ impl TrainingState {
     }
 
     fn persist(&self) -> Result<(), String> {
+        let _guard = self.2.lock().map_err(|_| "Training persistence lock failed".to_string())?;
         let snapshot = PersistedTrainingState {
             version: TRAINING_STATE_VERSION,
             jobs: self.persisted_jobs()?,
