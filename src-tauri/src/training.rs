@@ -31,7 +31,6 @@ pub struct TrainingRunRequest {
     pub quantization: String,
 }
 
-#[derive(Debug, Serialize)]
 #[derive(Debug, Serialize, Clone)]
 pub struct TrainingJobStatus {
     pub job_id: String,
