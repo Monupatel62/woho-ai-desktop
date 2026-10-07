@@ -1,0 +1,146 @@
+name: Sign Windows installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional GitHub release tag to update with signed installers"
+        required: false
+        default: "v0.1.0"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  sign-windows:
+    runs-on: windows-latest
+    env:
+      LLAMA_CPP_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11430/llama-b11430-bin-win-cpu-x64.zip
+      LLAMA_CPP_SHA256: b608455b0109793f774537d63d15d4cf2098ddbc5b200ebc9a648e1d85369666
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: pnpm install --no-frozen-lockfile
+      - name: Build production agent sidecar
+        run: pnpm build:agent-sidecar
+
+      - name: Prepare verified llama.cpp resource
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "llama-cpu.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "llama-extract"
+          $resource = Join-Path $env:GITHUB_WORKSPACE "src-tauri/resources/llama"
+          New-Item -ItemType Directory -Force -Path $extract,$resource | Out-Null
+          Invoke-WebRequest -Uri $env:LLAMA_CPP_URL -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLAMA_CPP_SHA256) {
+            throw "llama.cpp SHA-256 mismatch"
+          }
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+          $cli = Get-ChildItem -Path $extract -Filter "llama-cli.exe" -File -Recurse | Select-Object -First 1
+          if ($null -eq $cli) {
+            throw "llama-cli.exe missing"
+          }
+          Copy-Item -Path (Join-Path $cli.Directory.FullName "*") -Destination $resource -Recurse -Force
+
+      - name: Generate Tauri application icons
+        run: pnpm exec tauri icon src-tauri/icons/icon.png
+
+      - name: Build unsigned Windows installers
+        run: pnpm exec tauri build
+
+      - name: Package installers for signing
+        shell: pwsh
+        run: |
+          $staging = Join-Path $env:RUNNER_TEMP "woho-signing"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          $msi = Get-ChildItem "src-tauri/target/release/bundle/msi" -Filter "*.msi" -File
+          $exe = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -File
+          if ($msi.Count -lt 1 -or $exe.Count -lt 1) {
+            throw "Expected both MSI and NSIS EXE installers"
+          }
+          Copy-Item $msi.FullName -Destination $staging
+          Copy-Item $exe.FullName -Destination $staging
+          Compress-Archive -Path "$staging/*" -DestinationPath "$env:RUNNER_TEMP/windows-installers.zip" -Force
+
+      - name: Upload unsigned signing bundle
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: woho-ai-windows-signing-input
+          path: ${{ runner.temp }}/windows-installers.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Submit installers for Authenticode signing
+        id: sign
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: windows-installers
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signed
+          skip-decompress: true
+
+      - name: Extract and verify signed installers
+        shell: pwsh
+        run: |
+          $signedZip = Get-ChildItem "${{ runner.temp }}/signed" -Filter "*.zip" -File -Recurse | Select-Object -First 1
+          if ($null -eq $signedZip) {
+            throw "SignPath did not return a signed ZIP artifact"
+          }
+          $signedDir = Join-Path $env:RUNNER_TEMP "signed-installers"
+          New-Item -ItemType Directory -Force -Path $signedDir | Out-Null
+          Expand-Archive -Path $signedZip.FullName -DestinationPath $signedDir -Force
+
+          $files = @(
+            Get-ChildItem $signedDir -Filter "*.exe" -File
+            Get-ChildItem $signedDir -Filter "*.msi" -File
+          )
+          if ($files.Count -lt 2) {
+            throw "Signed MSI/EXE installers were not returned"
+          }
+
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -FilePath $file.FullName
+            Write-Host "$($file.Name): $($signature.Status) / $($signature.SignerCertificate.Subject)"
+            if ($signature.Status -ne "Valid") {
+              throw "Invalid Authenticode signature: $($file.Name)"
+            }
+          }
+
+      - name: Upload signed installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: woho-ai-windows-installers-signed
+          path: ${{ runner.temp }}/signed-installers/*
+          if-no-files-found: error
+
+      - name: Attach signed installers to GitHub release
+        if: ${{ inputs.release_tag != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release upload "$env:RELEASE_TAG" \
+            "$env:RUNNER_TEMP/signed-installers/*.exe" \
+            "$env:RUNNER_TEMP/signed-installers/*.msi" \
+            --repo "${{ github.repository }}" \
+            --clobber
