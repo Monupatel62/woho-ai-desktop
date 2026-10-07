@@ -87,11 +87,7 @@ impl TrainingState {
         if path.is_file() {
             let bytes = fs::read(&path)
                 .map_err(|error| format!("Unable to read persisted training state: {error}"))?;
-            let persisted: PersistedTrainingState = serde_json::from_slice(&bytes)
-                .map_err(|error| format!("Invalid persisted training state: {error}"))?;
-            if persisted.version != TRAINING_STATE_VERSION {
-                return Err("Unsupported persisted training state version".into());
-            }
+            let persisted = decode_persisted_state(&bytes)?;
             for mut job in persisted.jobs.into_iter().take(MAX_PERSISTED_JOBS) {
                 if job.status == "running" {
                     job.status = "failed".into();
@@ -130,8 +126,7 @@ impl TrainingState {
             version: TRAINING_STATE_VERSION,
             jobs: self.persisted_jobs()?,
         };
-        let bytes = serde_json::to_vec_pretty(&snapshot)
-            .map_err(|error| format!("Unable to encode training state: {error}"))?;
+        let bytes = encode_persisted_state(&snapshot)?;
         let path = self.1.as_ref();
         let temp = path.with_extension("json.tmp");
         fs::write(&temp, bytes)
@@ -140,6 +135,20 @@ impl TrainingState {
             .map_err(|error| format!("Unable to atomically replace training state: {error}"))?;
         Ok(())
     }
+}
+
+fn encode_persisted_state(state: &PersistedTrainingState) -> Result<Vec<u8>, String> {
+    serde_json::to_vec_pretty(state)
+        .map_err(|error| format!("Unable to encode training state: {error}"))
+}
+
+fn decode_persisted_state(bytes: &[u8]) -> Result<PersistedTrainingState, String> {
+    let persisted: PersistedTrainingState = serde_json::from_slice(bytes)
+        .map_err(|error| format!("Invalid persisted training state: {error}"))?;
+    if persisted.version != TRAINING_STATE_VERSION {
+        return Err("Unsupported persisted training state version".into());
+    }
+    Ok(persisted)
 }
 
 fn sha256_file(path: &Path, max_bytes: u64) -> Result<(String, u64), String> {
@@ -530,6 +539,69 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn job_status(job_id: &str, status: &str, stdout: &str, stderr: &str) -> TrainingJobStatus {
+        TrainingJobStatus {
+            job_id: job_id.into(),
+            status: status.into(),
+            exit_code: None,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            progress: None,
+            artifact: None,
+        }
+    }
+
+    #[test]
+    fn persists_versioned_state_and_rejects_unknown_versions() {
+        let state = PersistedTrainingState {
+            version: TRAINING_STATE_VERSION,
+            jobs: vec![job_status("job-1", "completed", "out", "err")],
+        };
+        let encoded = encode_persisted_state(&state).unwrap();
+        let decoded = decode_persisted_state(&encoded).unwrap();
+        assert_eq!(decoded.version, TRAINING_STATE_VERSION);
+        assert_eq!(decoded.jobs[0].job_id, "job-1");
+
+        let unsupported = serde_json::json!({"version": TRAINING_STATE_VERSION + 1, "jobs": []});
+        assert!(decode_persisted_state(&serde_json::to_vec(&unsupported).unwrap()).is_err());
+    }
+
+    #[test]
+    fn persisted_state_truncates_output_and_job_count() {
+        let mut jobs = std::collections::HashMap::new();
+        for index in 0..(MAX_PERSISTED_JOBS + 8) {
+            jobs.insert(
+                format!("job-{index:03}"),
+                job_status(
+                    &format!("job-{index:03}"),
+                    "completed",
+                    &"o".repeat(MAX_PERSISTED_OUTPUT_BYTES + 32),
+                    &"e".repeat(MAX_PERSISTED_OUTPUT_BYTES + 32),
+                ),
+            );
+        }
+        let mut values = jobs.values().cloned().collect::<Vec<_>>();
+        values.sort_by(|a, b| a.job_id.cmp(&b.job_id));
+        values.truncate(MAX_PERSISTED_JOBS);
+        for job in &mut values {
+            if job.stdout.len() > MAX_PERSISTED_OUTPUT_BYTES {
+                job.stdout.truncate(MAX_PERSISTED_OUTPUT_BYTES);
+            }
+            if job.stderr.len() > MAX_PERSISTED_OUTPUT_BYTES {
+                job.stderr.truncate(MAX_PERSISTED_OUTPUT_BYTES);
+            }
+        }
+        assert_eq!(values.len(), MAX_PERSISTED_JOBS);
+        assert!(values.iter().all(|job| job.stdout.len() <= MAX_PERSISTED_OUTPUT_BYTES));
+        assert!(values.iter().all(|job| job.stderr.len() <= MAX_PERSISTED_OUTPUT_BYTES));
+    }
+
+    #[test]
+    fn malformed_persisted_state_is_rejected() {
+        assert!(decode_persisted_state(b"{not-json}").is_err());
+        assert!(decode_persisted_state(br#"{"version":1,"jobs":"not-an-array"}"#).is_err());
+    }
 
     #[test]
     fn rejects_path_traversal_components() {
