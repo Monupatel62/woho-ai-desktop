@@ -1,4 +1,3 @@
-import type { QloraConfig } from "./config";
 import { validateQloraConfig } from "./qlora";
 import type { TrainingJob } from "./job";
 
@@ -30,7 +29,7 @@ export function buildTrainingCommand(job: TrainingJob, pythonExecutable = "pytho
 }
 
 export function validateTrainingCommand(command: TrainingCommand): void {
-  if (!command.executable || command.executable.includes("/") || command.executable.includes("\") || command.executable.includes("..")) {
+  if (!command.executable || command.executable.includes("/") || command.executable.includes("\\") || command.executable.includes("..")) {
     throw new Error("Training executable must be a trusted command name");
   }
   if (!command.cwd || command.cwd.includes("\0")) throw new Error("Invalid training working directory");
