@@ -11,12 +11,15 @@
     "dev": "pnpm exec tauri dev",
     "build": "pnpm exec tauri build",
     "check": "pnpm exec tsc --noEmit",
-    "test": "pnpm exec vitest run"
+    "test": "pnpm exec vitest run",
+    "build:agent-sidecar": "node scripts/build-agent-sidecar.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.1",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "esbuild": "0.25.12",
+    "postject": "1.0.0-alpha.6"
   },
   "dependencies": {
     "@woho/agents": "0.3.28",
