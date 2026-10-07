@@ -21,10 +21,10 @@ Managed runtime files are expected under the Tauri app-data directory:
 - `runtimes/llama/llama-cli.exe` on Windows
 - `models/<model-id>.gguf`
 
-The model id is validated before the path is resolved. The worker uses llama.cpp's `-m`, `-p`, `-n`, `-c` and `--temp` options for bounded non-interactive generation. llama.cpp requires GGUF model files for local inference. citeturn1search1turn1search0
+The model id is validated before the path is resolved. The worker uses llama.cpp's `-m`, `-p`, `-n`, `-c` and `--temp` options for bounded non-interactive generation. llama.cpp requires GGUF model files for local inference. See the official llama.cpp documentation for GGUF and llama-cli usage.
 
 ## Production
 
-The Node bridge will be packaged as a Tauri sidecar so users do not need to install Node separately. Tauri supports embedding external binaries/sidecars and resolves platform-specific target binaries during bundling. citeturn2search0turn2search5
+The Node bridge will be packaged as a Tauri sidecar so users do not need to install Node separately. Tauri supports embedding external binaries/sidecars and resolves platform-specific target binaries during bundling. See the official Tauri sidecar documentation.
 
 This phase intentionally does not commit model binaries or native llama.cpp binaries to Git.
