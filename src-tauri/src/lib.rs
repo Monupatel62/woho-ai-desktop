@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{path::BaseDirectory, Manager};
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -231,11 +231,41 @@ fn inside(root: &Path, candidate: &Path) -> bool {
     candidate.starts_with(root)
 }
 
-fn worker_path() -> PathBuf {
+fn worker_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var("WOHO_AGENT_BRIDGE") {
-        return PathBuf::from(path);
+        return Ok(PathBuf::from(path));
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/agent/agent-bridge.mjs")
+    let packaged = if cfg!(windows) {
+        app.path()
+            .resolve("agent/woho-agent.exe", BaseDirectory::Resource)
+            .ok()
+    } else {
+        app.path()
+            .resolve("agent/woho-agent", BaseDirectory::Resource)
+            .ok()
+    };
+    if let Some(path) = packaged {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/agent/agent-bridge.mjs"))
+}
+
+fn llama_runtime_dir(app: &tauri::AppHandle) -> Result<(PathBuf, bool), String> {
+    if let Ok(path) = std::env::var("WOHO_LLAMA_RUNTIME_DIR") {
+        return Ok((PathBuf::from(path), false));
+    }
+    if let Ok(path) = app.path().resolve("llama", BaseDirectory::Resource) {
+        if path.is_dir() {
+            return Ok((path, true));
+        }
+    }
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Unable to resolve app data directory: {error}"))?;
+    Ok((app_data.join("runtimes").join("llama"), false))
 }
 
 fn run_agent_bridge(app: &tauri::AppHandle, request: AgentRequest) -> Result<AgentResponse, String> {
@@ -249,31 +279,51 @@ fn run_agent_bridge(app: &tauri::AppHandle, request: AgentRequest) -> Result<Age
         .path()
         .app_data_dir()
         .map_err(|error| format!("Unable to resolve app data directory: {error}"))?;
-    let runtime_dir = app_data.join("runtimes").join("llama");
+    let (runtime_dir, packaged_runtime) = llama_runtime_dir(app)?;
     let model_dir = app_data.join("models");
     let executable = if cfg!(windows) {
         runtime_dir.join("llama-cli.exe")
     } else {
         runtime_dir.join("llama-cli")
     };
-    let worker = worker_path();
+    let worker = worker_path(app)?;
 
     if !worker.is_file() {
-        return Err("Agent bridge worker is not installed. Development uses src/agent/agent-bridge.mjs; production will use the packaged sidecar.".into());
+        return Err("Agent bridge sidecar is not installed".into());
     }
     if !executable.is_file() || !inside(&runtime_dir, &executable) {
         return Err("llama.cpp runtime is not installed in the managed runtime directory".into());
+    }
+    if packaged_runtime && std::env::var("WOHO_LLAMA_EXECUTABLE").is_ok() {
+        return Err("Packaged runtime cannot be overridden by environment configuration".into());
     }
     if !model_dir.is_dir() {
         return Err("Model directory is not installed".into());
     }
 
-    let node = std::env::var("WOHO_AGENT_NODE").unwrap_or_else(|_| "node".to_string());
     let payload = serde_json::to_vec(&request)
         .map_err(|error| format!("Failed to encode agent request: {error}"))?;
 
-    let mut child = Command::new(node)
-        .arg(&worker)
+    let packaged_agent = cfg!(windows)
+        && worker
+            .extension()
+            .map(|extension| extension.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false);
+
+    let mut command = if packaged_agent {
+        let mut command = Command::new(&worker);
+        command
+            .env_remove("WOHO_AGENT_NODE")
+            .env_remove("WOHO_AGENT_BRIDGE");
+        command
+    } else {
+        let node = std::env::var("WOHO_AGENT_NODE").unwrap_or_else(|_| "node".to_string());
+        let mut command = Command::new(node);
+        command.arg(&worker);
+        command
+    };
+
+    let mut child = command
         .env("WOHO_LLAMA_RUNTIME_DIR", &runtime_dir)
         .env("WOHO_MODEL_DIR", &model_dir)
         .env("WOHO_LLAMA_EXECUTABLE", &executable)
