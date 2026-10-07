@@ -74,6 +74,7 @@ fn python_executable() -> String {
     })
 }
 
+#[tauri::command]
 pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Result<TrainingRunResult, String> {
     safe_component(&request.job_id, "training job id", 128)?;
     safe_component(&request.base_model, "base model", 256)?;
@@ -170,5 +171,26 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
             });
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_path_traversal_components() {
+        assert!(safe_component("../python", "executable", 128).is_err());
+        assert!(safe_component("python", "executable", 128).is_ok());
+        assert!(safe_component("model/name", "base model", 256).is_err());
+    }
+
+    #[test]
+    fn keeps_relative_training_paths_inside_root() {
+        let root = Path::new("training");
+        assert!(relative_path(root, "dataset/manifest.jsonl", "dataset").is_ok());
+        assert!(relative_path(root, "../outside.jsonl", "dataset").is_err());
+        assert!(relative_path(root, "/absolute/path", "dataset").is_err());
     }
 }
