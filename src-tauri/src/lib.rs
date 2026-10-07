@@ -95,6 +95,10 @@ fn trusted_model(model_id: &str) -> Result<TrustedModel, String> {
         .ok_or_else(|| "Unknown model".into())
 }
 
+fn trusted_download_host(host: &str) -> bool {
+    host == "huggingface.co" || host.ends_with(".huggingface.co") || host.ends_with(".xethub.hf.co")
+}
+
 fn validate_model(model: &TrustedModel) -> Result<(), String> {
     if !model.id.bytes().enumerate().all(|(index, byte)| {
         (byte.is_ascii_lowercase() || byte.is_ascii_digit())
@@ -118,7 +122,12 @@ fn validate_model(model: &TrustedModel) -> Result<(), String> {
     }
     let url = reqwest::Url::parse(&model.download_url)
         .map_err(|_| "Invalid trusted model URL".to_string())?;
-    if url.scheme() != "https" || url.host_str() != Some("huggingface.co") {
+    if url.scheme() != "https"
+        || !url
+            .host_str()
+            .map(trusted_download_host)
+            .unwrap_or(false)
+    {
         return Err("Trusted model source is not allowed".into());
     }
     Ok(())
@@ -381,7 +390,21 @@ async fn model_install(app: tauri::AppHandle, model_id: String) -> Result<Manage
 
         let result = (|| {
             let response = reqwest::blocking::Client::builder()
-                .redirect(reqwest::redirect::Policy::limited(5))
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 5 {
+                        attempt.error("too many model download redirects")
+                    } else if attempt.url().scheme() == "https"
+                        && attempt
+                            .url()
+                            .host_str()
+                            .map(trusted_download_host)
+                            .unwrap_or(false)
+                    {
+                        attempt.follow()
+                    } else {
+                        attempt.stop()
+                    }
+                }))
                 .build()
                 .map_err(|error| format!("Unable to create HTTPS client: {error}"))?
                 .get(&model.download_url)
