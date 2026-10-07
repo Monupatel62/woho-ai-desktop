@@ -33,17 +33,22 @@ pub struct TrainingRunRequest {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct TrainingProgress { pub phase: String, pub completed: u64, pub total: u64, pub percent: u8 }
+
+#[derive(Debug, Serialize, Clone)]
 pub struct TrainingJobStatus {
     pub job_id: String,
     pub status: String,
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+    pub progress: Option<TrainingProgress>,
 }
 
 #[derive(Clone, Default)]
 pub struct TrainingState(pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>);
 
+#[derive(Debug, Serialize)]
 pub struct TrainingRunResult {
     pub job_id: String,
     pub status: &'static str,
@@ -81,6 +86,31 @@ fn append_bounded(target: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if value.get("status")?.as_str()? != "progress" || value.get("jobId")?.as_str()? != job_id {
+        return None;
+    }
+    let phase = value.get("phase")?.as_str()?.to_string();
+    let completed = value.get("completed")?.as_u64()?;
+    let total = value.get("total")?.as_u64()?;
+    let percent = value.get("percent")?.as_u64()?;
+    if total == 0 || completed > total || percent > 100 {
+        return None;
+    }
+    Some(TrainingProgress { phase, completed, total, percent: percent as u8 })
+}
+
+fn set_progress(state: &Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>, job_id: &str, progress: TrainingProgress) {
+    if let Ok(mut jobs) = state.lock() {
+        if let Some(job) = jobs.get_mut(job_id) {
+            if job.status == "running" {
+                job.progress = Some(progress);
+            }
+        }
+    }
+}
+
 fn python_executable() -> String {
     std::env::var("WOHO_TRAINING_PYTHON").unwrap_or_else(|_| {
         if cfg!(windows) { "python.exe".into() } else { "python3".into() }
@@ -88,7 +118,7 @@ fn python_executable() -> String {
 }
 
 #[tauri::command]
-pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Result<TrainingRunResult, String> {
+pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Result<TrainingRunResult, String> {
     safe_component(&request.job_id, "training job id", 128)?;
     safe_component(&request.base_model, "base model", 256)?;
     if request.rank == 0 || request.rank > 256 || request.alpha == 0 || request.alpha > 1024 {
@@ -125,17 +155,25 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         return Err("Training Python executable must be a trusted command name".into());
     }
 
+    let dataset_arg = dataset.to_string_lossy().into_owned();
+    let output_arg = output.to_string_lossy().into_owned();
+    let rank_arg = request.rank.to_string();
+    let alpha_arg = request.alpha.to_string();
+    let dropout_arg = request.dropout.to_string();
+    let epochs_arg = request.epochs.to_string();
+    let learning_rate_arg = request.learning_rate.to_string();
+
     let args = [
         "-m", "woho_training",
         "--job-id", request.job_id.as_str(),
         "--base-model", request.base_model.as_str(),
-        "--dataset-manifest", dataset.to_string_lossy().as_ref(),
-        "--output-dir", output.to_string_lossy().as_ref(),
-        "--rank", &request.rank.to_string(),
-        "--alpha", &request.alpha.to_string(),
-        "--dropout", &request.dropout.to_string(),
-        "--epochs", &request.epochs.to_string(),
-        "--learning-rate", &request.learning_rate.to_string(),
+        "--dataset-manifest", dataset_arg.as_str(),
+        "--output-dir", output_arg.as_str(),
+        "--rank", rank_arg.as_str(),
+        "--alpha", alpha_arg.as_str(),
+        "--dropout", dropout_arg.as_str(),
+        "--epochs", epochs_arg.as_str(),
+        "--learning-rate", learning_rate_arg.as_str(),
         "--quantization", request.quantization.as_str(),
     ];
 
@@ -149,7 +187,7 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         if let Some(existing) = jobs.get(&request.job_id) {
             if existing.status == "running" { return Err("Training job is already running".into()); }
         }
-        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new() });
+        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new(), progress: None });
     }
 
     let resource_dir = app.path().resource_dir().map_err(|error| format!("Unable to resolve resource directory: {error}"))?;
@@ -172,9 +210,12 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
     fn drain_output<R: Read + Send + 'static>(
         mut reader: R,
         overflow: Arc<AtomicBool>,
+        progress_state: Option<Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>>,
+        job_id: Option<String>,
     ) -> thread::JoinHandle<Result<Vec<u8>, String>> {
         thread::spawn(move || {
             let mut output = Vec::new();
+            let mut pending = String::new();
             let mut buffer = [0u8; 32 * 1024];
             loop {
                 let size = reader.read(&mut buffer).map_err(|error| format!("Training output read failed: {error}"))?;
@@ -183,14 +224,31 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
                     output.extend_from_slice(&buffer[..size]);
                 } else {
                     overflow.store(true, Ordering::SeqCst);
+                    continue;
+                }
+                if let (Some(state), Some(job_id)) = (&progress_state, &job_id) {
+                    pending.push_str(&String::from_utf8_lossy(&buffer[..size]));
+                    while let Some(index) = pending.find('\n') {
+                        let line = pending[..index].trim_end_matches('\r').to_string();
+                        pending.drain(..=index);
+                        if let Some(progress) = parse_progress_line(&line, job_id) {
+                            set_progress(state, job_id, progress);
+                        }
+                    }
+                }
+            }
+            if let (Some(state), Some(job_id)) = (&progress_state, &job_id) {
+                if let Some(progress) = parse_progress_line(pending.trim(), job_id) {
+                    set_progress(state, job_id, progress);
                 }
             }
             Ok(output)
         })
     }
 
-    let stdout_handle = drain_output(stdout_reader, Arc::clone(&overflow));
-    let stderr_handle = drain_output(stderr_reader, Arc::clone(&overflow));
+    let progress_state = Arc::clone(&state.0);
+    let stdout_handle = drain_output(stdout_reader, Arc::clone(&overflow), Some(progress_state), Some(request.job_id.clone()));
+    let stderr_handle = drain_output(stderr_reader, Arc::clone(&overflow), None, None);
     let started = Instant::now();
     loop {
         if started.elapsed() > Duration::from_secs(MAX_RUNTIME_SECS) {
@@ -208,6 +266,10 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
         if let Some(status) = child.try_wait().map_err(|error| format!("Training process failed: {error}"))? {
             let stdout = stdout_handle.join().map_err(|_| "Training stdout reader failed".to_string())??;
             let stderr = stderr_handle.join().map_err(|_| "Training stderr reader failed".to_string())??;
+            let progress = {
+                let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+                jobs.get(&request.job_id).and_then(|job| job.progress.clone())
+            };
             let result = TrainingRunResult {
                 job_id: request.job_id,
                 status: if status.success() { "completed" } else { "failed" },
@@ -216,7 +278,7 @@ pub fn run_training(app: &tauri::AppHandle, request: TrainingRunRequest) -> Resu
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
             };
             if let Ok(mut jobs) = state.0.lock() {
-                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone() });
+                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), progress });
             }
             return Ok(result);
         }
@@ -234,6 +296,29 @@ mod tests {
         assert!(safe_component("../python", "executable", 128).is_err());
         assert!(safe_component("python", "executable", 128).is_ok());
         assert!(safe_component("model/name", "base model", 256).is_err());
+    }
+
+    #[test]
+    fn parses_valid_progress_event() {
+        let progress = parse_progress_line(
+            r#"{"status":"progress","jobId":"job-1","phase":"training","completed":4,"total":10,"percent":40}"#,
+            "job-1",
+        ).unwrap();
+        assert_eq!(progress.phase, "training");
+        assert_eq!(progress.completed, 4);
+        assert_eq!(progress.percent, 40);
+    }
+
+    #[test]
+    fn rejects_invalid_progress_event() {
+        assert!(parse_progress_line(
+            r#"{"status":"progress","jobId":"job-1","phase":"training","completed":11,"total":10,"percent":110}"#,
+            "job-1",
+        ).is_none());
+        assert!(parse_progress_line(
+            r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#,
+            "job-1",
+        ).is_none());
     }
 
     #[test]
