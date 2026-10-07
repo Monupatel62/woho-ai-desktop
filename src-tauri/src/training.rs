@@ -15,6 +15,8 @@ const MAX_RUNTIME_SECS: u64 = 60 * 60;
 const TRAINING_STATE_VERSION: u32 = 1;
 const MAX_PERSISTED_JOBS: usize = 64;
 const MAX_PERSISTED_OUTPUT_BYTES: usize = 64 * 1024;
+const TRAINING_PLAN_SCHEMA_VERSION: u64 = 1;
+const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct TrainingRunRequest {
@@ -46,6 +48,15 @@ pub struct TrainingJobStatus {
     pub stdout: String,
     pub stderr: String,
     pub progress: Option<TrainingProgress>,
+    pub artifact: Option<TrainingArtifact>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TrainingArtifact {
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub schema_version: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -131,6 +142,40 @@ impl TrainingState {
     }
 }
 
+fn sha256_file(path: &Path, max_bytes: u64) -> Result<(String, u64), String> {
+    use sha2::{Digest, Sha256};
+    let metadata = fs::metadata(path).map_err(|error| format!("Unable to inspect training artifact: {error}"))?;
+    if metadata.len() > max_bytes { return Err("Training artifact exceeds the size limit".into()); }
+    let mut file = fs::File::open(path).map_err(|error| format!("Unable to open training artifact: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| format!("Unable to read training artifact: {error}"))?;
+        if read == 0 { break; }
+        total = total.saturating_add(read as u64);
+        if total > max_bytes { return Err("Training artifact exceeds the size limit".into()); }
+        digest.update(&buffer[..read]);
+    }
+    Ok((format!("{:x}", digest.finalize()), total))
+}
+
+fn verify_training_artifact(root: &Path, output: &Path, job_id: &str, dataset: &Path) -> Result<TrainingArtifact, String> {
+    let plan = output.join("training-plan.json");
+    if !plan.is_file() { return Err("Training artifact training-plan.json is missing".into()); }
+    let bytes = fs::read(&plan).map_err(|error| format!("Unable to read training plan: {error}"))?;
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES { return Err("Training artifact exceeds the size limit".into()); }
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| format!("Training plan is not valid JSON: {error}"))?;
+    if value.get("schemaVersion").and_then(serde_json::Value::as_u64) != Some(TRAINING_PLAN_SCHEMA_VERSION) { return Err("Unsupported training plan schema version".into()); }
+    if value.get("jobId").and_then(serde_json::Value::as_str) != Some(job_id) { return Err("Training plan job ID does not match the requested job".into()); }
+    let expected_dataset = value.get("datasetSha256").and_then(serde_json::Value::as_str).ok_or_else(|| "Training plan is missing datasetSha256".to_string())?;
+    let (dataset_hash, _) = sha256_file(dataset, MAX_ARTIFACT_BYTES)?;
+    if expected_dataset != dataset_hash { return Err("Training plan dataset hash does not match the source manifest".into()); }
+    let (hash, size_bytes) = sha256_file(&plan, MAX_ARTIFACT_BYTES)?;
+    let relative = plan.strip_prefix(root).map_err(|_| "Training artifact escaped training directory".to_string())?;
+    Ok(TrainingArtifact { path: relative.to_string_lossy().into_owned(), sha256: hash, size_bytes, schema_version: TRAINING_PLAN_SCHEMA_VERSION })
+}
+
 #[derive(Debug, Serialize)]
 pub struct TrainingRunResult {
     pub job_id: String,
@@ -138,6 +183,7 @@ pub struct TrainingRunResult {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+    pub artifact: Option<TrainingArtifact>,
 }
 
 fn safe_component(value: &str, label: &str, max: usize) -> Result<(), String> {
@@ -270,7 +316,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         if let Some(existing) = jobs.get(&request.job_id) {
             if existing.status == "running" { return Err("Training job is already running".into()); }
         }
-        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new(), progress: None });
+        jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new(), progress: None, artifact: None });
     }
     state.persist()?;
 
@@ -375,15 +421,25 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                 let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
                 jobs.get(&request.job_id).and_then(|job| job.progress.clone())
             };
+            let mut artifact = None;
+            let mut result_status = if status.success() { "completed" } else { "failed" };
+            let mut result_stderr = String::from_utf8_lossy(&stderr).into_owned();
+            if status.success() {
+                match verify_training_artifact(&root, &output, &request.job_id, &dataset) {
+                    Ok(value) => artifact = Some(value),
+                    Err(error) => { result_status = "failed"; result_stderr = error; }
+                }
+            }
             let result = TrainingRunResult {
                 job_id: request.job_id,
-                status: if status.success() { "completed" } else { "failed" },
+                status: result_status,
                 exit_code: status.code().unwrap_or(-1),
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                stderr: result_stderr,
+                artifact: artifact.clone(),
             };
             if let Ok(mut jobs) = state.0.lock() {
-                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), progress });
+                jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), artifact, progress });
             }
             state.persist()?;
             return Ok(result);
