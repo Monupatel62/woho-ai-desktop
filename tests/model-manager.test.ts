@@ -13,7 +13,7 @@ describe("trusted model manager", () => {
   it("pins a real GGUF artifact to a trusted source and digest", () => {
     expect(BUILTIN_MODELS).toHaveLength(1);
     const model = getTrustedModel("qwen3-0.6b-q4_0");
-    expect(model.filename).toBe("Qwen3-0.6B-Q4_0.gguf");
+    expect(model.filename).toBe("qwen3-0.6b-q4_0.gguf");
     expect(model.sizeBytes).toBe(428970080);
     expect(model.sha256).toBe(
       "da2572f16c06133561ce56accaa822216f2391ef4d37fba427801cd6736417d4",
