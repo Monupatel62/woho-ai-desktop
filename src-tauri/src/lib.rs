@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{path::BaseDirectory, Manager};
 
 mod training;
@@ -435,7 +435,8 @@ async fn model_install(app: tauri::AppHandle, model_id: String) -> Result<Manage
             if verify_model_file(&app, &model)? {
                 return managed_model(&app, model, true);
             }
-            return Err("A model file already exists but failed verification; remove it before reinstalling".into());
+            fs::remove_file(&target)
+                .map_err(|error| format!("Unable to remove the failed model before reinstalling: {error}"))?;
         }
 
         let stamp = SystemTime::now()
@@ -466,6 +467,8 @@ async fn model_install(app: tauri::AppHandle, model_id: String) -> Result<Manage
                         attempt.stop()
                     }
                 }))
+                .connect_timeout(Duration::from_secs(20))
+                .timeout(Duration::from_secs(30 * 60))
                 .build()
                 .map_err(|error| format!("Unable to create HTTPS client: {error}"))?
                 .get(&model.download_url)
