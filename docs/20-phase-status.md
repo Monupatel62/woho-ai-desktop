@@ -3,8 +3,8 @@
 | Phase | Foundation in this repository |
 |---|---|
 | 1 | Tauri Windows desktop shell |
-| 2 | @woho/agents adapter boundary |
-| 3 | llama.cpp process/runtime contract |
+| 2 | @woho/agents runtime bridge implemented |
+| 3 | Managed llama.cpp process bridge implemented |
 | 4 | Open-model descriptor contract |
 | 5 | Dataset example schema |
 | 6 | Reproducible training configuration |
