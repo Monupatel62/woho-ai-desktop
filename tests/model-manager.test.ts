@@ -5,6 +5,7 @@ import {
 } from "../src/models/manifest";
 import {
   getBuiltinModel,
+  ensureVerifiedModel,
   validateInstall,
   validateModelSource,
 } from "../src/models/model-manager";
@@ -53,6 +54,28 @@ describe("trusted model manager", () => {
         },
       ),
     ).toThrow();
+  });
+
+  it("requires the Tauri verification boundary before execution", async () => {
+    const original = globalThis.window;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { __TAURI__: { core: { invoke: async () => ({
+        ...getBuiltinModel("qwen3-0.6b-q4_0"),
+        installed: true,
+        verified: true,
+      }) } } },
+    });
+    await expect(ensureVerifiedModel("qwen3-0.6b-q4_0")).resolves.toMatchObject({
+      verified: true,
+    });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: original });
+  });
+
+  it("rejects unknown model IDs before crossing the Tauri boundary", async () => {
+    await expect(import("../src/models/model-manager").then(({ installModel }) => installModel("../escape"))).rejects.toThrow("Unknown model");
+    await expect(import("../src/models/model-manager").then(({ removeModel }) => removeModel("../escape"))).rejects.toThrow("Unknown model");
+    await expect(import("../src/models/model-manager").then(({ verifyModel }) => verifyModel("../escape"))).rejects.toThrow("Unknown model");
   });
 
   it("exposes uninstalled trusted models deterministically", () => {
