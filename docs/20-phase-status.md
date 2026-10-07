@@ -6,7 +6,7 @@
 | 2 | @woho/agents runtime bridge implemented |
 | 3 | Managed llama.cpp process bridge implemented |
 | 4 | **Complete — Qwen3 0.6B GGUF trusted model integration with real local chat** |
-| 5 | Dataset example schema |
+| 5 | **Complete — versioned dataset schema, validation, deterministic JSONL export, provenance metadata, and regression tests** |
 | 6 | Reproducible training configuration |
 | 7 | QLoRA configuration |
 | 8 | Deterministic benchmark scorer |
