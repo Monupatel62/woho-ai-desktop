@@ -5,11 +5,12 @@ const valid = {
   schemaVersion: 1,
   examples: [{
     id: "welcome-001",
-    messages: [
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: "Hello! How can I help?" },
-    ],
-    metadata: { source: "seed", language: "en" },
+    instruction: "Greet the user",
+    input: "Hello",
+    output: "Hello! How can I help?",
+    source: "curated",
+    license: "apache-2.0",
+    qualityScore: 0.95,
   }],
 };
 
@@ -25,24 +26,22 @@ describe("WoHo dataset architecture", () => {
     expect(datasetToJsonl(dataset)).toBe(JSON.stringify(valid.examples[0]) + "\n");
   });
 
-  it("rejects path-like and oversized identifiers", () => {
+  it("rejects path-like IDs, oversized content and invalid quality", () => {
     expect(() => loadDataset(JSON.stringify({
       ...valid, examples: [{ ...valid.examples[0], id: "../escape" }],
     }))).toThrow();
     expect(() => loadDataset(JSON.stringify({
-      ...valid, examples: [{ ...valid.examples[0], messages: [
-        { role: "user", content: "x".repeat(64 * 1024 + 1) },
-        { role: "assistant", content: "ok" },
-      ]}],
+      ...valid, examples: [{ ...valid.examples[0], instruction: "x".repeat(64 * 1024 + 1) }],
+    }))).toThrow();
+    expect(() => loadDataset(JSON.stringify({
+      ...valid, examples: [{ ...valid.examples[0], qualityScore: 2 }],
     }))).toThrow();
   });
 
-  it("rejects unsupported schema versions and invalid roles", () => {
+  it("rejects unsupported versions and unknown sources", () => {
     expect(() => loadDataset(JSON.stringify({ ...valid, schemaVersion: 2 }))).toThrow();
     expect(() => loadDataset(JSON.stringify({
-      ...valid, examples: [{ ...valid.examples[0], messages: [
-        { role: "tool", content: "x" }, { role: "assistant", content: "ok" },
-      ]}],
+      ...valid, examples: [{ ...valid.examples[0], source: "external" }],
     }))).toThrow();
   });
 });
