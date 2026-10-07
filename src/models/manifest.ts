@@ -1,3 +1,4 @@
+import manifest from "./manifest.json";
 import type { ModelDescriptor } from "../core/contracts";
 
 export interface TrustedModel extends ModelDescriptor {
@@ -9,21 +10,13 @@ export interface TrustedModel extends ModelDescriptor {
   license: string;
 }
 
-export const BUILTIN_MODELS: readonly TrustedModel[] = [
-  {
-    id: "qwen3-0.6b-q4_0",
-    name: "Qwen3 0.6B Q4_0",
-    format: "gguf",
-    contextTokens: 8192,
-    filename: "qwen3-0.6b-q4_0.gguf",
-    sizeBytes: 428970080,
-    sha256: "da2572f16c06133561ce56accaa822216f2391ef4d37fba427801cd6736417d4",
-    downloadUrl:
-      "https://huggingface.co/ggml-org/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf",
-    source: "https://huggingface.co/ggml-org/Qwen3-0.6B-GGUF",
-    license: "apache-2.0",
-  },
-];
+interface ManifestShape {
+  version: number;
+  models: TrustedModel[];
+}
+
+export const MODEL_MANIFEST = manifest as ManifestShape;
+export const BUILTIN_MODELS: readonly TrustedModel[] = MODEL_MANIFEST.models;
 
 export function getTrustedModel(modelId: string): TrustedModel {
   const model = BUILTIN_MODELS.find((candidate) => candidate.id === modelId);
