@@ -290,7 +290,19 @@ mod tests {
     }
 
     #[test]
-    #[test]\n    fn parses_valid_progress_event() {\n        let progress = parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":4,"total":10,"percent":40}"#, "job-1").unwrap();\n        assert_eq!(progress.phase, "training");\n        assert_eq!(progress.completed, 4);\n        assert_eq!(progress.percent, 40);\n    }\n\n    #[test]\n    fn rejects_invalid_progress_event() {\n        assert!(parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":11,"total":10,"percent":110}"#, "job-1").is_none());\n        assert!(parse_progress_line(r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#, "job-1").is_none());\n    }\n\n    #[test]\n    fn keeps_relative_training_paths_inside_root() {
+    #[test]
+    fn parses_valid_progress_event() {
+        let progress = parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":4,"total":10,"percent":40}"#, "job-1").unwrap();
+        assert_eq!(progress.phase, "training");\n        assert_eq!(progress.completed, 4);\n        assert_eq!(progress.percent, 40);
+    }
+
+    #[test]
+    fn rejects_invalid_progress_event() {\n        assert!(parse_progress_line(r#"{"status":"progress","jobId":"job-1","phase":"training","completed":11,"total":10,"percent":110}"#, "job-1").is_none());
+        assert!(parse_progress_line(r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#, "job-1").is_none());
+    }
+
+    #[test]
+    fn keeps_relative_training_paths_inside_root() {
         let root = Path::new("training");
         assert!(relative_path(root, "dataset/manifest.jsonl", "dataset").is_ok());
         assert!(relative_path(root, "../outside.jsonl", "dataset").is_err());
