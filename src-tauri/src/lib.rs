@@ -14,7 +14,7 @@ struct RuntimeHealth {
     status: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AgentRequest {
     #[serde(rename = "conversationId")]
     conversation_id: String,
@@ -24,7 +24,7 @@ struct AgentRequest {
     runtime: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AgentResponse {
     text: String,
     #[serde(rename = "modelId")]
