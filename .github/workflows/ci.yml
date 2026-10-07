@@ -74,6 +74,8 @@ jobs:
             throw "llama-cli.exe missing"
           }
           Copy-Item -Path (Join-Path $cli.Directory.FullName "*") -Destination $resource -Recurse -Force
+      - name: Generate Tauri application icons
+        run: pnpm exec tauri icon src-tauri/icons/icon.png
       - name: Compile production Tauri application
         run: pnpm exec tauri build --no-bundle
       - name: Build Windows installers
