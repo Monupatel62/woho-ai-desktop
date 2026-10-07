@@ -17,5 +17,10 @@
     "@tauri-apps/cli": "2.12.1",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@woho/agents": "0.3.28",
+    "@woho/core": "0.2.24",
+    "@tauri-apps/api": "2.8.5"
   }
 }
