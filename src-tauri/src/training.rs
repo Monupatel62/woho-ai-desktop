@@ -327,7 +327,16 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
         }
         jobs.insert(request.job_id.clone(), TrainingJobStatus { job_id: request.job_id.clone(), status: "running".into(), exit_code: None, stdout: String::new(), stderr: String::new(), progress: None, artifact: None });
     }
-    state.persist()?;
+    if let Err(error) = state.persist() {
+        if let Ok(mut jobs) = state.0.lock() {
+            if let Some(job) = jobs.get_mut(&request.job_id) {
+                job.status = "failed".into();
+                job.stderr = format!("Unable to persist training start state: {error}");
+            }
+        }
+        let _ = state.persist();
+        return Err(format!("Unable to persist training start state: {error}"));
+    }
 
     let resource_dir = match app.path().resource_dir() {
         Ok(path) => path,
