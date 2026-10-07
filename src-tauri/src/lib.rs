@@ -232,8 +232,10 @@ fn inside(root: &Path, candidate: &Path) -> bool {
 }
 
 fn worker_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("WOHO_AGENT_BRIDGE") {
-        return Ok(PathBuf::from(path));
+    if cfg!(debug_assertions) {
+        if let Ok(path) = std::env::var("WOHO_AGENT_BRIDGE") {
+            return Ok(PathBuf::from(path));
+        }
     }
     let packaged = if cfg!(windows) {
         app.path()
@@ -253,8 +255,10 @@ fn worker_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn llama_runtime_dir(app: &tauri::AppHandle) -> Result<(PathBuf, bool), String> {
-    if let Ok(path) = std::env::var("WOHO_LLAMA_RUNTIME_DIR") {
-        return Ok((PathBuf::from(path), false));
+    if cfg!(debug_assertions) {
+        if let Ok(path) = std::env::var("WOHO_LLAMA_RUNTIME_DIR") {
+            return Ok((PathBuf::from(path), false));
+        }
     }
     if let Ok(path) = app.path().resolve("llama", BaseDirectory::Resource) {
         if path.is_dir() {
@@ -317,7 +321,11 @@ fn run_agent_bridge(app: &tauri::AppHandle, request: AgentRequest) -> Result<Age
             .env_remove("WOHO_AGENT_BRIDGE");
         command
     } else {
-        let node = std::env::var("WOHO_AGENT_NODE").unwrap_or_else(|_| "node".to_string());
+        let node = if cfg!(debug_assertions) {
+            std::env::var("WOHO_AGENT_NODE").unwrap_or_else(|_| "node".to_string())
+        } else {
+            "node".to_string()
+        };
         let mut command = Command::new(node);
         command.arg(&worker);
         command
