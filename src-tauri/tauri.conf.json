@@ -32,6 +32,9 @@
       "resources/agent/",
       "resources/llama/",
       "../woho_training.py"
+    ],
+    "icon": [
+      "icons/icon.ico"
     ]
   }
 }
