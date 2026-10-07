@@ -76,3 +76,28 @@ jobs:
           Copy-Item -Path (Join-Path $cli.Directory.FullName "*") -Destination $resource -Recurse -Force
       - name: Compile production Tauri application
         run: pnpm exec tauri build --no-bundle
+      - name: Build Windows installers
+        run: pnpm exec tauri build
+      - name: Verify Windows installer artifacts
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter "*.msi" -File -ErrorAction SilentlyContinue
+          $exe = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -File -ErrorAction SilentlyContinue
+          if ($msi.Count -lt 1) {
+            throw "MSI installer was not generated"
+          }
+          if ($exe.Count -lt 1) {
+            throw "NSIS EXE installer was not generated"
+          }
+          Write-Host "MSI installer(s):"
+          $msi | ForEach-Object { Write-Host $_.FullName }
+          Write-Host "NSIS EXE installer(s):"
+          $exe | ForEach-Object { Write-Host $_.FullName }
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: woho-ai-windows-installers
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
