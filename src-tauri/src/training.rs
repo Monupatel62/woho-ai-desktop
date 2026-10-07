@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use tauri::Manager;
 
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PROGRESS_LINE_BYTES: usize = 128 * 1024;
+const MAX_PROGRESS_PHASE_BYTES: usize = 256;
 const MAX_ARGS: usize = 64;
 const MAX_RUNTIME_SECS: u64 = 60 * 60;
 const TRAINING_STATE_VERSION: u32 = 1;
@@ -229,7 +231,11 @@ fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> {
     if value.get("status")?.as_str()? != "progress" || value.get("jobId")?.as_str()? != job_id {
         return None;
     }
-    let phase = value.get("phase")?.as_str()?.to_string();
+    let phase = value.get("phase")?.as_str()?;
+    if phase.is_empty() || phase.len() > MAX_PROGRESS_PHASE_BYTES || phase.contains('\0') {
+        return None;
+    }
+    let phase = phase.to_string();
     let completed = value.get("completed")?.as_u64()?;
     let total = value.get("total")?.as_u64()?;
     let percent = value.get("percent")?.as_u64()?;
@@ -243,7 +249,15 @@ fn set_progress(state: &TrainingState, job_id: &str, progress: TrainingProgress)
     if let Ok(mut jobs) = state.0.lock() {
         if let Some(job) = jobs.get_mut(job_id) {
             if job.status == "running" {
-                job.progress = Some(progress);
+                let monotonic = match &job.progress {
+                    Some(previous) => progress.completed >= previous.completed
+                        && progress.percent >= previous.percent
+                        && progress.total >= previous.total,
+                    None => true,
+                };
+                if monotonic {
+                    job.progress = Some(progress);
+                }
             }
         }
     }
@@ -405,9 +419,17 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                 }
                 if let (Some(state), Some(job_id)) = (&progress_state, &job_id) {
                     pending.push_str(&String::from_utf8_lossy(&buffer[..size]));
+                    if pending.len() > MAX_PROGRESS_LINE_BYTES {
+                        overflow.store(true, Ordering::SeqCst);
+                        return Err("Training progress line exceeds the size limit".into());
+                    }
                     while let Some(index) = pending.find('\n') {
                         let line = pending[..index].trim_end_matches('\r').to_string();
                         pending.drain(..=index);
+                        if line.len() > MAX_PROGRESS_LINE_BYTES {
+                            overflow.store(true, Ordering::SeqCst);
+                            return Err("Training progress line exceeds the size limit".into());
+                        }
                         if let Some(progress) = parse_progress_line(&line, job_id) {
                             set_progress(state, job_id, progress);
                         }
@@ -415,7 +437,12 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                 }
             }
             if let (Some(state), Some(job_id)) = (&progress_state, &job_id) {
-                if let Some(progress) = parse_progress_line(pending.trim(), job_id) {
+                let pending = pending.trim();
+                if pending.len() > MAX_PROGRESS_LINE_BYTES {
+                    overflow.store(true, Ordering::SeqCst);
+                    return Err("Training progress line exceeds the size limit".into());
+                }
+                if let Some(progress) = parse_progress_line(pending, job_id) {
                     set_progress(state, job_id, progress);
                 }
             }
@@ -628,6 +655,32 @@ mod tests {
         assert_eq!(progress.phase, "training");
         assert_eq!(progress.completed, 4);
         assert_eq!(progress.percent, 40);
+    }
+
+    #[test]
+    fn rejects_oversized_progress_phase() {
+        let phase = "p".repeat(MAX_PROGRESS_PHASE_BYTES + 1);
+        let event = serde_json::json!({"status":"progress","jobId":"job-1","phase":phase,"completed":1,"total":2,"percent":50});
+        assert!(parse_progress_line(&serde_json::to_string(&event).unwrap(), "job-1").is_none());
+    }
+
+    #[test]
+    fn rejects_oversized_progress_line() {
+        let phase = "p".repeat(MAX_PROGRESS_LINE_BYTES);
+        let event = serde_json::json!({"status":"progress","jobId":"job-1","phase":phase,"completed":1,"total":2,"percent":50});
+        let line = serde_json::to_string(&event).unwrap();
+        assert!(line.len() > MAX_PROGRESS_LINE_BYTES);
+    }
+
+    #[test]
+    fn progress_values_are_monotonic() {
+        let state = TrainingState(Arc::new(Mutex::new(std::collections::HashMap::from([("job-1".into(), job_status("job-1", "running", "", ""))]))), Arc::new(PathBuf::from("unused")), Arc::new(Mutex::new(())));
+        set_progress(&state, "job-1", TrainingProgress { phase: "training".into(), completed: 5, total: 10, percent: 50 });
+        set_progress(&state, "job-1", TrainingProgress { phase: "training".into(), completed: 4, total: 10, percent: 40 });
+        let jobs = state.0.lock().unwrap();
+        let progress = jobs.get("job-1").unwrap().progress.as_ref().unwrap();
+        assert_eq!(progress.completed, 5);
+        assert_eq!(progress.percent, 50);
     }
 
     #[test]
