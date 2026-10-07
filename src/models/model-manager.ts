@@ -50,14 +50,17 @@ export async function listModels(): Promise<ManagedModel[]> {
 }
 
 export async function installModel(modelId: string): Promise<ManagedModel> {
+  getTrustedModel(modelId);
   return invoke<ManagedModel>("model_install", { modelId });
 }
 
 export async function removeModel(modelId: string): Promise<void> {
+  getTrustedModel(modelId);
   await invoke("model_remove", { modelId });
 }
 
 export async function verifyModel(modelId: string): Promise<ManagedModel> {
+  getTrustedModel(modelId);
   return invoke<ManagedModel>("model_verify", { modelId });
 }
 

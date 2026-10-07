@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BUILTIN_MODELS,
   getTrustedModel,
@@ -56,21 +56,8 @@ describe("trusted model manager", () => {
     ).toThrow();
   });
 
-  it("requires the Tauri verification boundary before execution", async () => {
-    const original = globalThis.window;
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: { __TAURI__: { core: { invoke: async () => ({
-        ...getBuiltinModel("qwen3-0.6b-q4_0"),
-        installed: true,
-        verified: true,
-      }) } } },
-    });
-    await expect(ensureVerifiedModel("qwen3-0.6b-q4_0")).resolves.toMatchObject({
-      verified: true,
-    });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: original });
-  });
+  it("requires the Tauri verification boundary before execution", async () => {    vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => ({ ...getBuiltinModel("qwen3-0.6b-q4_0"), installed: true, verified: true })) }));
+    await expect(ensureVerifiedModel("qwen3-0.6b-q4_0")).resolves.toMatchObject({ verified: true });  });
 
   it("rejects unknown model IDs before crossing the Tauri boundary", async () => {
     await expect(import("../src/models/model-manager").then(({ installModel }) => installModel("../escape"))).rejects.toThrow("Unknown model");
