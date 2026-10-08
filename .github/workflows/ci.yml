@@ -80,6 +80,23 @@ jobs:
         run: pnpm exec tauri build --no-bundle
       - name: Build Windows installers
         run: pnpm exec tauri build
+      - name: Verify packaged runtime resources
+        shell: pwsh
+        run: |
+          $agent = "src-tauri/resources/agent/woho-agent.exe"
+          $llama = "src-tauri/resources/llama/llama-cli.exe"
+          $frontend = "dist/index.html"
+          foreach ($path in @($agent,$llama,$frontend)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required packaged runtime resource missing: $path"
+            }
+          }
+          $agentSize = (Get-Item $agent).Length
+          $llamaSize = (Get-Item $llama).Length
+          if ($agentSize -lt 1024) { throw "woho-agent.exe is unexpectedly small" }
+          if ($llamaSize -lt 1024) { throw "llama-cli.exe is unexpectedly small" }
+          Write-Host "Verified runtime resources: agent=$agentSize bytes, llama=$llamaSize bytes, frontend=$frontend"
+
       - name: Verify Windows installer artifacts
         shell: pwsh
         run: |
