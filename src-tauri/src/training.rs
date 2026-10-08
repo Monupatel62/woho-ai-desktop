@@ -73,6 +73,7 @@ pub struct TrainingState(
     pub Arc<Mutex<std::collections::HashMap<String, TrainingJobStatus>>>,
     Arc<PathBuf>,
     Arc<Mutex<()>>,
+    Arc<Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
 );
 
 impl TrainingState {
@@ -119,7 +120,12 @@ impl TrainingState {
                 }
             }
         }
-        let state = Self(Arc::new(Mutex::new(jobs)), Arc::new(path), Arc::new(Mutex::new(())));
+        let state = Self(
+            Arc::new(Mutex::new(jobs)),
+            Arc::new(path),
+            Arc::new(Mutex::new(())),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+        );
         if recovered {
             state.persist()?;
         }
@@ -261,6 +267,29 @@ fn verify_training_artifact(root: &Path, output: &Path, job_id: &str, dataset: &
     Ok(TrainingArtifact { path: relative.to_string_lossy().into_owned(), sha256: hash, size_bytes, schema_version: TRAINING_PLAN_SCHEMA_VERSION })
 }
 
+#[tauri::command]
+pub fn training_job_cancel(
+    state: tauri::State<'_, TrainingState>,
+    job_id: String,
+) -> Result<(), String> {
+    safe_component(&job_id, "training job id", 128)?;
+    let cancellations = state.3.lock().map_err(|_| "Training cancellation lock failed".to_string())?;
+    match cancellations.get(&job_id) {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        None => {
+            let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+            match jobs.get(&job_id) {
+                Some(job) if job.status != "running" => Err("Training job is not running".into()),
+                Some(_) => Err("Training cancellation is not ready".into()),
+                None => Err("Training job not found".into()),
+            }
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct TrainingRunResult {
     pub job_id: String,
@@ -372,6 +401,12 @@ fn set_progress(state: &TrainingState, job_id: &str, progress: TrainingProgress)
     state.persist()
 }
 
+fn clear_cancellation(state: &TrainingState, job_id: &str) {
+    if let Ok(mut cancellations) = state.3.lock() {
+        cancellations.remove(job_id);
+    }
+}
+
 fn python_executable() -> String {
     std::env::var("WOHO_TRAINING_PYTHON").unwrap_or_else(|_| {
         if cfg!(windows) { "python.exe".into() } else { "python3".into() }
@@ -379,7 +414,7 @@ fn python_executable() -> String {
 }
 
 #[tauri::command]
-pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Result<TrainingRunResult, String> {
+pub fn run_training(app: tauri::AppHandle, state: tauri::State<'_, TrainingState>, request: TrainingRunRequest) -> Result<TrainingRunResult, String> {
     safe_component(&request.job_id, "training job id", 128)?;
     safe_component(&request.base_model, "base model", 256)?;
     if request.rank == 0 || request.rank > 256 || request.alpha == 0 || request.alpha > 1024 {
@@ -420,6 +455,12 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     fs::create_dir_all(&output_candidate)
         .map_err(|error| format!("Unable to create training output directory: {error}"))?;
     let output = canonicalize_inside(&root, &output_candidate, "output directory")?;
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    {
+        let mut cancellations = state.inner().3.lock().map_err(|_| "Training cancellation lock failed".to_string())?;
+        cancellations.insert(request.job_id.clone(), Arc::clone(&cancellation));
+    }
 
     let executable = python_executable();
     if executable.contains('/') || executable.contains('\\') || executable.contains("..") {
@@ -482,6 +523,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                     job.stderr = format!("Unable to resolve resource directory: {error}");
                 }
             }
+            clear_cancellation(&state, &request.job_id);
             let _ = state.persist();
             return Err(format!("Unable to resolve resource directory: {error}"));
         }
@@ -576,6 +618,21 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
     let stderr_handle = drain_output(stderr_reader, Arc::clone(&overflow), None, None);
     let started = Instant::now();
     loop {
+        if cancellation.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            if let Ok(mut jobs) = state.0.lock() {
+                if let Some(job) = jobs.get_mut(&request.job_id) {
+                    job.status = "cancelled".into();
+                    job.stderr = "Training job cancelled by user".into();
+                }
+            }
+            clear_cancellation(&state, &request.job_id);
+            state.persist()?;
+            return Err("Training job cancelled".into());
+        }
         if started.elapsed() > Duration::from_secs(MAX_RUNTIME_SECS) {
             let _ = child.kill();
             let _ = child.wait();
@@ -685,6 +742,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             if let Ok(mut jobs) = state.0.lock() {
                 jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), artifact, progress });
             }
+            clear_cancellation(&state, &result.job_id);
             state.persist()?;
             return Ok(result);
         }
@@ -741,6 +799,7 @@ mod tests {
             Arc::new(Mutex::new(std::collections::HashMap::new())),
             Arc::new(target),
             Arc::new(Mutex::new(())),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
         );
         let error = state.persist().unwrap_err();
         assert!(error.contains("must not be a symlink"));
@@ -843,7 +902,12 @@ mod tests {
 
     #[test]
     fn progress_values_are_monotonic() {
-        let state = TrainingState(Arc::new(Mutex::new(std::collections::HashMap::from([("job-1".into(), job_status("job-1", "running", "", ""))]))), Arc::new(PathBuf::from("unused")), Arc::new(Mutex::new(())));
+        let state = TrainingState(
+            Arc::new(Mutex::new(std::collections::HashMap::from([("job-1".into(), job_status("job-1", "running", "", ""))]))),
+            Arc::new(PathBuf::from("unused")),
+            Arc::new(Mutex::new(())),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+        );
         set_progress(&state, "job-1", TrainingProgress { phase: "training".into(), completed: 5, total: 10, percent: 50 });
         set_progress(&state, "job-1", TrainingProgress { phase: "training".into(), completed: 4, total: 10, percent: 40 });
         let jobs = state.0.lock().unwrap();
