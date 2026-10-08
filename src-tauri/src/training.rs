@@ -458,7 +458,7 @@ pub fn run_training(app: tauri::AppHandle, state: tauri::State<'_, TrainingState
 
     let cancellation = Arc::new(AtomicBool::new(false));
     {
-        let mut cancellations = state.cancel.lock().map_err(|_| "Training cancellation lock failed".to_string())?;
+        let mut cancellations = state.inner().3.lock().map_err(|_| "Training cancellation lock failed".to_string())?;
         cancellations.insert(request.job_id.clone(), Arc::clone(&cancellation));
     }
 
