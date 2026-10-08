@@ -899,3 +899,205 @@ mod tests {
         let line = serde_json::to_string(&event).unwrap();
         assert!(line.len() > MAX_PROGRESS_LINE_BYTES);
     }
+
+    #[test]
+    fn progress_values_are_monotonic() {
+        let state = TrainingState(
+            Arc::new(Mutex::new(std::collections::HashMap::from([("job-1".into(), job_status("job-1", "running", "", ""))]))),
+            Arc::new(PathBuf::from("unused")),
+            Arc::new(Mutex::new(())),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+        );
+        set_progress(&state, "job-1", TrainingProgress { phase: "training".into(), completed: 5, total: 10, percent: 50 });
+        set_progress(&state, "job-1", TrainingProgress { phase: "training".into(), completed: 4, total: 10, percent: 40 });
+        let jobs = state.0.lock().unwrap();
+        let progress = jobs.get("job-1").unwrap().progress.as_ref().unwrap();
+        assert_eq!(progress.completed, 5);
+        assert_eq!(progress.percent, 50);
+    }
+
+    #[test]
+    fn rejects_invalid_progress_event() {
+        assert!(parse_progress_line(
+            r#"{"status":"progress","jobId":"job-1","phase":"training","completed":11,"total":10,"percent":110}"#,
+            "job-1",
+        ).is_none());
+        assert!(parse_progress_line(
+            r#"{"status":"progress","jobId":"other","phase":"training","completed":1,"total":1,"percent":100}"#,
+            "job-1",
+        ).is_none());
+    }
+
+    fn write_dataset(path: &Path) -> String {
+        fs::write(path, b"{\"text\":\"hello\"}\n").unwrap();
+        let (hash, _) = sha256_file(path, MAX_ARTIFACT_BYTES).unwrap();
+        hash
+    }
+
+    fn write_plan(output: &Path, job_id: &str, dataset_hash: &str) {
+        fs::create_dir_all(output).unwrap();
+        let plan = serde_json::json!({
+            "schemaVersion": TRAINING_PLAN_SCHEMA_VERSION,
+            "jobId": job_id,
+            "datasetSha256": dataset_hash
+        });
+        fs::write(output.join("training-plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn verifies_valid_training_artifact() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        write_plan(&output, "job-1", &hash);
+        let artifact = verify_training_artifact(&root, &output, "job-1", &dataset).unwrap();
+        assert_eq!(artifact.schema_version, 1);
+        assert_eq!(artifact.path, "output/training-plan.json");
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_missing_artifact() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        assert!(verify_training_artifact(&root, &output, "job-1", &hash).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_malformed_json() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-json-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("training-plan.json"), b"not-json").unwrap();
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_wrong_schema_and_job_id() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-schema-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        write_plan(&output, "other-job", &hash);
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let plan = serde_json::json!({"schemaVersion": 999, "jobId": "job-1", "datasetSha256": hash});
+        fs::write(output.join("training-plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_dataset_hash_mismatch() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-hash-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        write_dataset(&dataset);
+        write_plan(&output, "job-1", "deadbeef");
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_artifact_outside_training_root() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let hash = write_dataset(&dataset);
+        write_plan(&outside, "job-1", &hash);
+        assert!(verify_training_artifact(&root, &outside, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_oversized_artifact() {
+        let temp = std::env::temp_dir().join(format!("woho-artifact-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let dataset = root.join("dataset.jsonl");
+        let output = root.join("output");
+        fs::create_dir_all(&root).unwrap();
+        let hash = write_dataset(&dataset);
+        fs::create_dir_all(&output).unwrap();
+        let mut file = fs::File::create(output.join("training-plan.json")).unwrap();
+        use std::io::Write;
+        file.write_all(&vec![b'x'; (MAX_ARTIFACT_BYTES as usize) + 1]).unwrap();
+        drop(file);
+        assert!(verify_training_artifact(&root, &output, "job-1", &dataset).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn rejects_symlinked_training_paths() {
+        let temp = std::env::temp_dir().join(format!("woho-training-symlink-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let root = temp.join("training");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = root.join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside, &link).unwrap();
+        assert!(reject_symlink_path(&root, &link, "output").is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn keeps_relative_training_paths_inside_root() {
+        let root = Path::new("training");
+        assert!(relative_path(root, "dataset/manifest.jsonl", "dataset").is_ok());
+        assert!(relative_path(root, "../outside.jsonl", "dataset").is_err());
+        assert!(relative_path(root, "/absolute/path", "dataset").is_err());
+    }
+}
+
+
+#[tauri::command]
+pub fn training_job_status(
+    state: tauri::State<'_, TrainingState>,
+    job_id: String,
+) -> Result<TrainingJobStatus, String> {
+    safe_component(&job_id, "training job id", 128)?;
+    let jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+    jobs.get(&job_id).cloned().ok_or_else(|| "Training job not found".into())
+}
+
+#[tauri::command]
+pub fn training_job_clear(
+    state: tauri::State<'_, TrainingState>,
+    job_id: String,
+) -> Result<(), String> {
+    safe_component(&job_id, "training job id", 128)?;
+    let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
+    jobs.remove(&job_id);
+    drop(jobs);
+    state.persist()?;
+    Ok(())
+}
