@@ -151,6 +151,11 @@ impl TrainingState {
         let bytes = encode_persisted_state(&snapshot)?;
         let path = self.1.as_ref();
         let temp = path.with_extension("json.tmp");
+        if let Ok(metadata) = fs::symlink_metadata(&temp) {
+            if metadata.file_type().is_symlink() {
+                return Err("Temporary training state path must not be a symlink".into());
+            }
+        }
         fs::write(&temp, bytes)
             .map_err(|error| format!("Unable to write training state: {error}"))?;
         replace_persisted_state(&temp, path)?;
@@ -716,6 +721,31 @@ mod tests {
         }
         assert_eq!(recovered[0].status, "failed");
         assert_eq!(recovered[0].stderr, "Training job interrupted by application restart");
+    }
+
+    #[test]
+    fn rejects_symlinked_persistence_temp_path() {
+        let temp_root = std::env::temp_dir().join(format!("woho-training-persist-symlink-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_root);
+        fs::create_dir_all(&temp_root).unwrap();
+        let target = temp_root.join("jobs.json");
+        let link_target = temp_root.join("outside.json");
+        fs::write(&link_target, b"outside").unwrap();
+        let temp_path = target.with_extension("json.tmp");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&link_target, &temp_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&link_target, &temp_path).unwrap();
+
+        let state = TrainingState(
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+            Arc::new(target),
+            Arc::new(Mutex::new(())),
+        );
+        let error = state.persist().unwrap_err();
+        assert!(error.contains("must not be a symlink"));
+        assert_eq!(fs::read(&link_target).unwrap(), b"outside");
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
