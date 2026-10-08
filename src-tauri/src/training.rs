@@ -20,6 +20,8 @@ const MAX_PERSISTED_OUTPUT_BYTES: usize = 64 * 1024;
 const TRAINING_PLAN_SCHEMA_VERSION: u64 = 1;
 const MAX_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ACTIVE_TRAINING_JOBS: usize = 2;
+const MAX_TRAINING_SCRIPT_BYTES: u64 = 4 * 1024 * 1024;
+const BUNDLED_TRAINING_SCRIPT_SHA256: &str = "b448bfb046209e9999e1b9adc97119e8f18a97510f5c8540612d88471c183a2e";
 
 #[derive(Debug, Deserialize)]
 pub struct TrainingRunRequest {
@@ -548,6 +550,19 @@ pub fn run_training(app: tauri::AppHandle, state: tauri::State<'_, TrainingState
         if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Bundled training runtime is missing".into(); } }
         let _ = state.persist();
         return Err("Bundled training runtime is missing".into());
+    }
+    let script_metadata = fs::symlink_metadata(&training_script)
+        .map_err(|error| format!("Unable to inspect bundled training runtime: {error}"))?;
+    if script_metadata.file_type().is_symlink() {
+        if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Bundled training runtime must not be a symlink".into(); } }
+        let _ = state.persist();
+        return Err("Bundled training runtime must not be a symlink".into());
+    }
+    let (script_hash, _) = sha256_file(&training_script, MAX_TRAINING_SCRIPT_BYTES)?;
+    if script_hash != BUNDLED_TRAINING_SCRIPT_SHA256 {
+        if let Ok(mut jobs) = state.0.lock() { if let Some(job) = jobs.get_mut(&request.job_id) { job.status = "failed".into(); job.stderr = "Bundled training runtime integrity check failed".into(); } }
+        let _ = state.persist();
+        return Err("Bundled training runtime integrity check failed".into());
     }
     let training_script_arg = training_script.to_string_lossy().into_owned();
     let mut child = match Command::new(&executable)
