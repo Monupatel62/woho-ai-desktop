@@ -351,7 +351,7 @@ fn run_agent_bridge(app: &tauri::AppHandle, request: AgentRequest) -> Result<Age
         .env("WOHO_LLAMA_EXECUTABLE", &executable)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| format!("Failed to start agent bridge: {error}"))?;
 
@@ -374,6 +374,20 @@ fn run_agent_bridge(app: &tauri::AppHandle, request: AgentRequest) -> Result<Age
 
     if output.stdout.len() > MAX_OUTPUT_BYTES {
         return Err("Agent bridge response exceeds size limit".into());
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("Agent bridge exited with status {}", output.status)
+        } else {
+            format!(
+                "Agent bridge exited with status {}: {}",
+                output.status,
+                detail.chars().take(2048).collect::<String>()
+            )
+        });
     }
 
     let line = String::from_utf8(output.stdout)
