@@ -267,14 +267,13 @@ fn verify_training_artifact(root: &Path, output: &Path, job_id: &str, dataset: &
     Ok(TrainingArtifact { path: relative.to_string_lossy().into_owned(), sha256: hash, size_bytes, schema_version: TRAINING_PLAN_SCHEMA_VERSION })
 }
 
-#[derive(Debug, Serialize)]
 #[tauri::command]
 pub fn training_job_cancel(
     state: tauri::State<'_, TrainingState>,
     job_id: String,
 ) -> Result<(), String> {
     safe_component(&job_id, "training job id", 128)?;
-    let cancellations = state.cancel.lock().map_err(|_| "Training cancellation lock failed".to_string())?;
+    let cancellations = state.3.lock().map_err(|_| "Training cancellation lock failed".to_string())?;
     match cancellations.get(&job_id) {
         Some(flag) => {
             flag.store(true, Ordering::SeqCst);
@@ -629,7 +628,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                     job.stderr = "Training job cancelled by user".into();
                 }
             }
-            clear_cancellation(&state, &request.job_id)
+            clear_cancellation(&state, &request.job_id);
             state.persist()?;
             return Err("Training job cancelled".into());
         }
@@ -742,7 +741,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             if let Ok(mut jobs) = state.0.lock() {
                 jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), artifact, progress });
             }
-            clear_cancellation(&state, &result.job_id)
+            clear_cancellation(&state, &result.job_id);
             state.persist()?;
             return Ok(result);
         }
