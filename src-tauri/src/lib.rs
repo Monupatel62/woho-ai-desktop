@@ -603,6 +603,7 @@ pub fn run() {
             agent_chat,
             training::run_training,
             training::training_job_status,
+            training::training_job_cancel,
             training::training_job_clear
         ])
         .run(tauri::generate_context!())
