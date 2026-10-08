@@ -407,6 +407,17 @@ fn clear_cancellation(state: &TrainingState, job_id: &str) {
     }
 }
 
+struct CancellationGuard {
+    state: TrainingState,
+    job_id: String,
+}
+
+impl Drop for CancellationGuard {
+    fn drop(&mut self) {
+        clear_cancellation(&self.state, &self.job_id);
+    }
+}
+
 fn python_executable() -> String {
     std::env::var("WOHO_TRAINING_PYTHON").unwrap_or_else(|_| {
         if cfg!(windows) { "python.exe".into() } else { "python3".into() }
@@ -461,6 +472,10 @@ pub fn run_training(app: tauri::AppHandle, state: tauri::State<'_, TrainingState
         let mut cancellations = state.inner().3.lock().map_err(|_| "Training cancellation lock failed".to_string())?;
         cancellations.insert(request.job_id.clone(), Arc::clone(&cancellation));
     }
+    let _cancellation_guard = CancellationGuard {
+        state: (*state).clone(),
+        job_id: request.job_id.clone(),
+    };
 
     let executable = python_executable();
     if executable.contains('/') || executable.contains('\\') || executable.contains("..") {
