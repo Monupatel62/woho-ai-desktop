@@ -401,6 +401,12 @@ fn set_progress(state: &TrainingState, job_id: &str, progress: TrainingProgress)
     state.persist()
 }
 
+fn clear_cancellation(state: &TrainingState, job_id: &str) {
+    if let Ok(mut cancellations) = state.cancel.lock() {
+        cancellations.remove(job_id);
+    }
+}
+
 fn python_executable() -> String {
     std::env::var("WOHO_TRAINING_PYTHON").unwrap_or_else(|_| {
         if cfg!(windows) { "python.exe".into() } else { "python3".into() }
@@ -517,6 +523,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                     job.stderr = format!("Unable to resolve resource directory: {error}");
                 }
             }
+            clear_cancellation(&state, &request.job_id);
             let _ = state.persist();
             return Err(format!("Unable to resolve resource directory: {error}"));
         }
@@ -622,9 +629,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                     job.stderr = "Training job cancelled by user".into();
                 }
             }
-            if let Ok(mut cancellations) = state.cancel.lock() {
-                cancellations.remove(&request.job_id);
-            }
+            clear_cancellation(&state, &request.job_id)
             state.persist()?;
             return Err("Training job cancelled".into());
         }
@@ -737,9 +742,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
             if let Ok(mut jobs) = state.0.lock() {
                 jobs.insert(result.job_id.clone(), TrainingJobStatus { job_id: result.job_id.clone(), status: result.status.into(), exit_code: Some(result.exit_code), stdout: result.stdout.clone(), stderr: result.stderr.clone(), artifact, progress });
             }
-            if let Ok(mut cancellations) = state.cancel.lock() {
-                cancellations.remove(&result.job_id);
-            }
+            clear_cancellation(&state, &result.job_id)
             state.persist()?;
             return Ok(result);
         }
