@@ -83,7 +83,7 @@ jobs:
       - name: Verify packaged runtime resources
         shell: pwsh
         run: |
-          $agent = "src-tauri/target/release/woho-agent.exe"
+          $agent = "src-tauri/resources/agent/woho-agent.exe"
           $llama = "src-tauri/resources/llama/llama-cli.exe"
           $frontend = "dist/index.html"
           foreach ($path in @($agent,$llama,$frontend)) {
