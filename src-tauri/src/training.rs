@@ -347,8 +347,9 @@ fn parse_progress_line(line: &str, job_id: &str) -> Option<TrainingProgress> {
     Some(TrainingProgress { phase, completed, total, percent: percent as u8 })
 }
 
-fn set_progress(state: &TrainingState, job_id: &str, progress: TrainingProgress) {
-    if let Ok(mut jobs) = state.0.lock() {
+fn set_progress(state: &TrainingState, job_id: &str, progress: TrainingProgress) -> Result<(), String> {
+    {
+        let mut jobs = state.0.lock().map_err(|_| "Training state lock failed".to_string())?;
         if let Some(job) = jobs.get_mut(job_id) {
             if job.status == "running" {
                 let monotonic = match &job.progress {
@@ -363,7 +364,7 @@ fn set_progress(state: &TrainingState, job_id: &str, progress: TrainingProgress)
             }
         }
     }
-    let _ = state.persist();
+    state.persist()
 }
 
 fn python_executable() -> String {
@@ -546,7 +547,7 @@ pub fn run_training(app: tauri::AppHandle, request: TrainingRunRequest) -> Resul
                             return Err("Training progress line exceeds the size limit".into());
                         }
                         if let Some(progress) = parse_progress_line(&line, job_id) {
-                            set_progress(state, job_id, progress);
+                            set_progress(state, job_id, progress)?;
                         }
                     }
                 }
